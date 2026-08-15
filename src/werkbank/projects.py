@@ -6,11 +6,12 @@ same way as ticket writes (in-process lock + flock sidecar) because board
 handler threads and chat sessions may write concurrently.
 """
 
-import fcntl
 import json
 import os
 import threading
 from pathlib import Path
+
+from werkbank import filelock
 
 _LOCK = threading.Lock()
 
@@ -55,10 +56,7 @@ def set_review_mode(config_path, path: str, nonblocking: bool) -> dict:
         raise ValueError("Bitte ein Projekt angeben.")
     config_path = Path(config_path)
     with _LOCK:
-        fd = os.open(config_path.parent / ".config.lock",
-                     os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+        with filelock.exclusive(config_path.parent / ".config.lock"):
             try:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
                 modes = cfg.get("nonblocking_review") or {}
@@ -68,10 +66,10 @@ def set_review_mode(config_path, path: str, nonblocking: bool) -> dict:
                     modes.pop(path, None)
                 cfg["nonblocking_review"] = modes
                 config_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-                                       encoding="utf-8")
+                                       encoding="utf-8", newline="\n")
                 return modes
             finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                pass
 
 
 def add_project(config_path, name: str, path: str) -> dict:
@@ -87,10 +85,7 @@ def add_project(config_path, name: str, path: str) -> dict:
         raise ValueError(f"Der Ordner existiert nicht: {p}")
     config_path = Path(config_path)
     with _LOCK:
-        fd = os.open(config_path.parent / ".config.lock",
-                     os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+        with filelock.exclusive(config_path.parent / ".config.lock"):
             try:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
                 projects = cfg.get("projects") or {}
@@ -99,7 +94,7 @@ def add_project(config_path, name: str, path: str) -> dict:
                 projects[name] = str(p)
                 cfg["projects"] = projects
                 config_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-                                       encoding="utf-8")
+                                       encoding="utf-8", newline="\n")
                 return projects
             finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                pass

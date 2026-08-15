@@ -4,7 +4,6 @@ The files are the source of truth — the board and the agents both read and wri
 through this module, but a hand-edited ticket file is equally valid.
 """
 
-import fcntl
 import os
 import re
 import tempfile
@@ -13,6 +12,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+
+from werkbank import filelock
 
 # One lock for all ticket writes (WB-9). The RLock serializes board handler
 # threads and the dispatcher worker inside the server process; the flock in
@@ -28,14 +29,10 @@ def _locked(tickets_dir):
     with _WRITE_LOCK:
         d = Path(tickets_dir)
         d.mkdir(parents=True, exist_ok=True)
-        # F7 (WB-35): O_NOFOLLOW so a planted symlink cannot redirect this.
-        fd = os.open(d / ".lock", os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+        # F7 (WB-35): the lock refuses to follow a planted symlink where the
+        # platform supports it. WB-43: works on Unix and Windows alike.
+        with filelock.exclusive(d / ".lock"):
+            yield
 
 
 class ConflictError(ValueError):
@@ -182,10 +179,12 @@ def _write_ticket_file(path: Path, text: str) -> None:
     # F7 (WB-35): mkstemp never follows a planted symlink and is unguessable.
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".wb-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n" keeps ticket files byte-identical on every platform
+        # (Windows would otherwise write \r\n) — WB-43.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         os.chmod(tmp_name, 0o644)
-        os.replace(tmp_name, path)
+        filelock.replace_with_retry(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise

@@ -345,7 +345,7 @@ class CrossProcessLockTest(unittest.TestCase):
                 "for i in range(15):\n"
                 "    store.update_ticket(%r, %r, {'status': 'in_arbeit' if i %% 2 else 'offen'})\n"
             ) % (str(src), str(d), t.id)
-            procs = [subprocess.Popen(["python3", "-c", script]) for _ in range(2)]
+            procs = [subprocess.Popen([sys.executable, "-c", script]) for _ in range(2)]
             self.assertEqual([p.wait() for p in procs], [0, 0])
             after = {x.id: x for x in store.load_tickets(d)}[t.id]
             self.assertEqual(int(after.version), 1 + 30)

@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from werkbank import store
+from werkbank import filelock, store
 
 
 class DispatchError(Exception):
@@ -77,7 +77,7 @@ def save_last_session(project: str, session_id: str, state_path=None,
     # Non-interactive entries keep the legacy plain-string form.
     data[str(project)] = ({"id": session_id, "interactive": True}
                           if interactive else session_id)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def register_ticket_session(project: str, session_id, state_path=None):
@@ -193,7 +193,10 @@ def log_dir() -> Path:
     """Private log directory (WB-35, F6): /tmp is world-readable and its names
     are predictable, so a local user could read agent transcripts or pre-plant
     a symlink. Logs live in the user's state dir with 0700."""
-    base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    if os.name == "nt":  # WB-43
+        base = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+    else:
+        base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
     p = Path(base) / "werkbank" / "logs"
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
     return p
@@ -205,7 +208,7 @@ def _log_path(ticket_id: str) -> Path:
 
 def _open_log(path: Path):
     """Append-only, no symlink following, owner-readable only."""
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND | filelock.NOFOLLOW, 0o600)
     return os.fdopen(fd, "ab")
 
 

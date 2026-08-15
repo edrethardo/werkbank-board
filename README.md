@@ -46,7 +46,11 @@ ticket is handed over there and worked **visibly in front of you**.
   terminal, and `claude -p "hi"` must answer. The board shells out to that
   binary; agent runs consume your Claude quota.
 - **Python 3.10+** (standard library only, nothing to install).
-- **Linux or macOS.** `fcntl` file locking makes it Unix-only today.
+- **Linux, macOS or Windows.** File locking uses `fcntl` on Unix and `msvcrt`
+  on Windows; ticket files always use `\n` line endings, whatever the platform.
+  (Honest caveat: the Windows path is written and unit-covered, but the
+  maintainer has no Windows machine — it has not been run on real Windows.
+  Reports welcome.)
 - **git**, if you want the ticket history that this design assumes.
 
 ### 1. Get the code and configure it
@@ -110,7 +114,7 @@ Ticket"* or *"ich hab einen Bug gefunden"*.
 
 ### 5. Start it automatically (optional)
 
-On a systemd machine, `~/.config/systemd/user/werkbank-board.service`:
+**Linux (systemd)** — `~/.config/systemd/user/werkbank-board.service`:
 
 ```ini
 [Unit]
@@ -135,6 +139,18 @@ The board then starts at login and restarts itself after a crash. Logs:
 `journalctl --user -u werkbank-board`; agent run logs live in
 `~/.local/state/werkbank/logs/`.
 
+**macOS** — the same effect with a `launchd` plist in
+`~/Library/LaunchAgents/`, or simply keep a terminal running.
+
+**Windows** — press `Win+R`, type `shell:startup`, and put a shortcut there to:
+
+```
+pythonw.exe C:\Pfad\zu\werkbank\src\werkbank\server.py
+```
+
+`pythonw.exe` starts it without a console window. Agent run logs then live in
+`%LOCALAPPDATA%\werkbank\logs\`.
+
 ### Configuration reference
 
 | Key | Meaning |
@@ -154,7 +170,8 @@ The board then starts at login and restarts itself after a crash. Logs:
 python3 -m unittest discover -s tests
 ```
 
-122 tests, no dependencies, no network access needed.
+129 tests, no dependencies, no network access needed. A handful of them
+skip themselves on Windows (they use shell-script stand-ins for the CLI).
 
 ## How it's built
 

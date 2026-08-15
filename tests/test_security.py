@@ -1,4 +1,5 @@
 """Regression tests for the WB-35 security review findings."""
+import os
 import shutil
 import sys
 import tempfile
@@ -83,6 +84,8 @@ class FrontmatterInjectionTest(unittest.TestCase):
         self.assertEqual(list(Path("/tmp").glob("pwn-*.md")), [])
 
 
+@unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt",
+                     "Symlinks brauchen unter Windows besondere Rechte")
 class SymlinkTest(unittest.TestCase):
     """F8: a symlinked ticket file must not be read through."""
 

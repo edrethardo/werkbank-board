@@ -181,6 +181,7 @@ class ForcedForkCommandTest(unittest.TestCase):
             self.assertEqual("--fork-session" in cmd, expected, f"fork={fork}")
 
 
+@unittest.skipIf(os.name == "nt", "Attrappen sind sh-Skripte")
 class RunClaudeInteractiveTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -214,6 +215,7 @@ class RunClaudeInteractiveTest(unittest.TestCase):
         self.assertEqual(entry, {"id": "sess-fork", "interactive": False})
 
 
+@unittest.skipIf(os.name == "nt", "Attrappen sind sh-Skripte")
 class RunClaudeStateTest(unittest.TestCase):
     """run_claude against a fake claude binary: session memory + fallback."""
 
@@ -724,6 +726,7 @@ class QueueColumnTest(unittest.TestCase):
         self.assertEqual(self.started, [queued.id])
 
 
+@unittest.skipIf(os.name == "nt", "Attrappen sind sh-Skripte")
 class LiveStatusTest(unittest.TestCase):
     """WB-37: while a run is going, the board must see what it is doing and
     whether it died — including usage limits."""
