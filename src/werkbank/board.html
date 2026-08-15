@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Werkbank</title>
+<style>
+  /* Dark is the default; the toggle stores "light" in localStorage. */
+  :root {
+    --bg: #1d2125; --col-bg: #22272b; --card-bg: #2c333a; --text: #b6c2cf;
+    --muted: #8c9bab; --accent: #579dff; --border: #3d444c; --shadow: rgba(0,0,0,.4);
+    --hoch: #f87462; --normal: #579dff; --niedrig: #8c9bab;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f5f7; --col-bg: #ebecf0; --card-bg: #ffffff; --text: #172b4d;
+    --muted: #5e6c84; --accent: #0052cc; --border: #dfe1e6; --shadow: rgba(9,30,66,.15);
+    --hoch: #de350b; --normal: #0052cc; --niedrig: #5e6c84;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+         background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { display: flex; align-items: center; gap: 1rem; padding: .9rem 1.4rem;
+           border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 1.15rem; }
+  header .spacer { flex: 1; }
+  button.primary { background: var(--accent); color: #fff; border: 0; border-radius: 4px;
+           padding: .5rem .9rem; font-size: .9rem; cursor: pointer; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.ghost { background: none; border: 1px solid var(--border); border-radius: 4px;
+           padding: .35rem .55rem; font-size: 1rem; cursor: pointer; color: var(--text); }
+  button.ghost:hover { background: var(--col-bg); }
+  select.ghost { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+           padding: .35rem .55rem; font-size: .88rem; cursor: pointer; color: var(--text);
+           max-width: 14rem; }
+  #board { display: grid; grid-template-columns: repeat(6, 1fr); gap: .8rem;
+           padding: 1rem 1.4rem; align-items: start; }
+  .col[data-status="zu_bearbeiten"] h2 { color: var(--accent); }
+  .col { background: var(--col-bg); border-radius: 8px; padding: .6rem;
+         min-height: 12rem; }
+  .col h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em;
+            color: var(--muted); padding: .2rem .4rem .6rem; }
+  .col h2 .count { font-weight: normal; }
+  .col.dragover { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .col[data-status="fehlgeschlagen"] h2 { color: var(--hoch); }
+  .card { background: var(--card-bg); border-radius: 6px; padding: .6rem .7rem;
+          margin-bottom: .5rem; box-shadow: 0 1px 2px var(--shadow); cursor: grab; }
+  .card:active { cursor: grabbing; }
+  .card .title { font-size: .92rem; margin-bottom: .45rem; }
+  .card .meta { display: flex; align-items: center; gap: .5rem; font-size: .75rem;
+                color: var(--muted); }
+  .card .id { font-weight: 600; }
+  .bug-badge { background: var(--hoch); color: #fff; border-radius: 3px;
+               padding: .05rem .35rem; font-size: .68rem; font-weight: 700;
+               letter-spacing: .04em; }
+  .link-badge { border: 1px solid var(--border); color: var(--muted);
+                border-radius: 3px; padding: .05rem .3rem; font-size: .68rem;
+                cursor: help; }
+  .card.blocked { opacity: .55; }
+  .prio { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+  .prio.hoch { background: var(--hoch); } .prio.normal { background: var(--normal); }
+  .prio.niedrig { background: var(--niedrig); }
+  .assignee { margin-left: auto; background: var(--col-bg); border-radius: 10px;
+              padding: .1rem .5rem; }
+  .card-actions { display: flex; gap: .4rem; margin-top: .55rem; }
+  .card-actions button { flex: 1; padding: .3rem .5rem; font-size: .78rem; cursor: pointer;
+                         border-radius: 4px; border: 1px solid var(--border);
+                         background: var(--bg); color: var(--text); }
+  .card-actions button.accept { background: var(--accent); color: #fff; border: 0; }
+  .card-actions button:hover { filter: brightness(1.08); }
+  .run-info { margin-top: .5rem; font-size: .72rem; color: var(--muted);
+              border-top: 1px dashed var(--border); padding-top: .4rem; }
+  .run-info.run-alert { color: var(--hoch); font-weight: 600; }
+  #detailSession { font-size: .8rem; color: var(--muted); margin-top: .3rem;
+                   white-space: pre-line; }
+  dialog { border: 0; border-radius: 8px; background: var(--card-bg); color: var(--text);
+           padding: 1.2rem 1.4rem; width: min(34rem, 92vw); box-shadow: 0 8px 30px var(--shadow);
+           resize: both; overflow: auto; min-width: 20rem; min-height: 8rem;
+           max-width: 95vw; max-height: 88vh; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin-bottom: .9rem; font-size: 1rem; }
+  form label { display: block; font-size: .78rem; color: var(--muted); margin: .7rem 0 .2rem; }
+  form input, form textarea, form select {
+    width: 100%; padding: .45rem .55rem; font: inherit; font-size: .9rem;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; }
+  form textarea { min-height: 7rem; resize: vertical; }
+  .row { display: flex; gap: .8rem; } .row > div { flex: 1; }
+  .actions { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1.1rem; }
+  .actions button { padding: .45rem .9rem; border-radius: 4px; border: 1px solid var(--border);
+                    background: var(--bg); color: var(--text); cursor: pointer; font-size: .9rem; }
+  .actions button.primary { background: var(--accent); color: #fff; border: 0; }
+  .actions button.danger { border-color: var(--hoch); color: var(--hoch); background: none; }
+  .actions button.danger:hover { background: var(--hoch); color: #fff; }
+  #detail .result { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+                    padding: .7rem; font-size: .85rem; white-space: pre-wrap; max-height: 14rem;
+                    overflow: auto; margin-top: .2rem; }
+  .fork-label { display: flex; align-items: center; gap: .45rem; margin: .7rem 0 .2rem;
+                font-size: .85rem; cursor: help; }
+  .fork-label input { width: auto; }
+  .browse-list { border: 1px solid var(--border); border-radius: 4px; max-height: 16rem;
+                 overflow: auto; font-size: .88rem; }
+  .browse-list div { padding: .4rem .6rem; cursor: pointer; }
+  .browse-list div:hover { background: var(--col-bg); }
+  #fileErrors { margin: 1rem 1.4rem 0; }
+  .file-error { border: 1px solid var(--hoch); border-left: 4px solid var(--hoch);
+                border-radius: 6px; background: var(--card-bg); color: var(--text);
+                padding: .55rem .8rem; font-size: .85rem; margin-bottom: .4rem; }
+  #error { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+           background: var(--hoch); color: #fff; padding: .6rem 1rem; border-radius: 6px;
+           display: none; }
+</style>
+<script>
+  // Before first paint, so switching to light does not flash dark.
+  document.documentElement.dataset.theme = localStorage.getItem("werkbank-theme") || "dark";
+</script>
+</head>
+<body>
+<header>
+  <h1>🛠️ Werkbank</h1>
+  <span class="spacer"></span>
+  <select id="projectFilter" class="ghost" title="Board auf ein Projekt eingrenzen"
+          onchange="setProjectFilter(this.value)"></select>
+  <button class="ghost" onclick="openProjects()" title="Projekte verwalten">📁 Projekte</button>
+  <button class="ghost" id="themeToggle" onclick="toggleTheme()"></button>
+  <button class="primary" onclick="openCreate()">+ Neues Ticket</button>
+</header>
+
+<div id="fileErrors" style="display:none"></div>
+<div id="board"></div>
+
+<dialog id="create">
+  <h3>Neues Ticket</h3>
+  <form id="createForm" method="dialog">
+    <label>Titel</label><input name="title" required autocomplete="off">
+    <label>Beschreibung</label><textarea name="description"></textarea>
+    <div class="row">
+      <div><label>Typ</label>
+        <select name="type">
+          <option value="aufgabe" selected>Aufgabe</option>
+          <option value="bug">Bug</option>
+        </select></div>
+      <div><label>Zugewiesen an</label><input name="assignee" value="claude"></div>
+      <div><label>Priorität</label>
+        <select name="priority">
+          <option value="hoch">Hoch</option>
+          <option value="normal" selected>Normal</option>
+          <option value="niedrig">Niedrig</option>
+        </select></div>
+    </div>
+    <label>Projekt</label><select name="project" id="createProject"></select>
+    <div class="row">
+      <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
+        <input name="nach" autocomplete="off"></div>
+      <div><label>Nicht gleichzeitig mit</label>
+        <input name="nicht_mit" autocomplete="off"></div>
+    </div>
+    <label class="fork-label" title="Angehakt: Der Agent arbeitet auf einer Abzweigung — die gemerkte Ticket-Session bleibt unverändert. Nicht angehakt: Der Agent setzt die gemerkte Ticket-Session direkt fort; sie wächst als eine durchgehende Unterhaltung. Gibt es keine gemerkte Ticket-Session, wird zur Sicherheit immer abgezweigt.">
+      <input type="checkbox" name="fork"> ⑂ Auf Abzweigung arbeiten
+    </label>
+    <div class="actions">
+      <button type="button" onclick="document.getElementById('create').close()">Abbrechen</button>
+      <button type="submit" class="primary">Anlegen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="detail">
+  <h3 id="detailId"></h3>
+  <form id="detailForm" method="dialog">
+    <label>Titel</label><input name="title" required>
+    <label>Beschreibung</label><textarea name="description"></textarea>
+    <div class="row">
+      <div><label>Typ</label>
+        <select name="type">
+          <option value="aufgabe">Aufgabe</option>
+          <option value="bug">Bug</option>
+        </select></div>
+      <div><label>Zugewiesen an</label><input name="assignee"></div>
+      <div><label>Priorität</label>
+        <select name="priority">
+          <option value="hoch">Hoch</option>
+          <option value="normal">Normal</option>
+          <option value="niedrig">Niedrig</option>
+        </select></div>
+    </div>
+    <label>Projekt</label><select name="project" id="detailProject"></select>
+    <div class="row">
+      <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
+        <input name="nach" autocomplete="off"></div>
+      <div><label>Nicht gleichzeitig mit</label>
+        <input name="nicht_mit" autocomplete="off"></div>
+    </div>
+    <label class="fork-label" title="Angehakt: Der Agent arbeitet auf einer Abzweigung — die gemerkte Ticket-Session bleibt unverändert. Nicht angehakt: Der Agent setzt die gemerkte Ticket-Session direkt fort; sie wächst als eine durchgehende Unterhaltung. Gibt es keine gemerkte Ticket-Session, wird zur Sicherheit immer abgezweigt.">
+      <input type="checkbox" name="fork"> ⑂ Auf Abzweigung arbeiten
+    </label>
+    <label>Ergebnis (vom Agenten)</label>
+    <div class="result" id="detailResult"></div>
+    <div id="detailSession"></div>
+    <div class="actions">
+      <button type="button" class="danger" onclick="deleteTicket()">Löschen</button>
+      <span style="flex:1"></span>
+      <button type="button" onclick="document.getElementById('detail').close()">Abbrechen</button>
+      <button type="submit" class="primary">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="projects">
+  <h3>Projekte</h3>
+  <div id="projectList" style="font-size:.85rem; margin-bottom:.6rem"></div>
+  <form id="projectForm" method="dialog">
+    <label>Name</label><input name="name" required autocomplete="off" placeholder="z. B. Mein Spiel">
+    <label>Ordner</label>
+    <div class="row">
+      <div><input name="path" required autocomplete="off" placeholder="~/code/mein-spiel"></div>
+      <button type="button" class="ghost" style="flex:0" onclick="openBrowse()">📂 Durchsuchen</button>
+    </div>
+    <div class="actions">
+      <button type="button" onclick="document.getElementById('projects').close()">Schließen</button>
+      <button type="submit" class="primary">Projekt hinzufügen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="browse">
+  <h3>Ordner auswählen</h3>
+  <div id="browsePath" style="font-size:.8rem; color:var(--muted); word-break:break-all; margin-bottom:.5rem"></div>
+  <div id="browseList" class="browse-list"></div>
+  <div class="actions">
+    <button type="button" onclick="document.getElementById('browse').close()">Abbrechen</button>
+    <button type="button" class="primary" onclick="chooseBrowsed()">Diesen Ordner wählen</button>
+  </div>
+</dialog>
+
+<dialog id="reject">
+  <h3 id="rejectTitle"></h3>
+  <form id="rejectForm" method="dialog">
+    <label>Grund der Ablehnung</label>
+    <textarea name="reason" required></textarea>
+    <div class="actions">
+      <button type="button" onclick="document.getElementById('reject').close()">Abbrechen</button>
+      <button type="submit" class="primary">Ablehnen</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="error"></div>
+
+<script>
+const COLUMNS = [
+  ["offen", "Offen"], ["zu_bearbeiten", "Zu bearbeiten"],
+  ["in_arbeit", "In Arbeit"], ["review", "Review"],
+  ["fehlgeschlagen", "Fehlgeschlagen"], ["erledigt", "Erledigt"],
+];
+let tickets = [], config = {}, fileErrors = [], runs = {};
+// WB-10: only touch the DOM when the data really changed, never mid-drag.
+let lastSnapshot = "", dragging = false, pendingRender = false;
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("werkbank-theme", theme);
+  const btn = document.getElementById("themeToggle");
+  btn.textContent = theme === "dark" ? "☀️" : "🌙";
+  btn.title = theme === "dark" ? "Zum hellen Design wechseln" : "Zum dunklen Design wechseln";
+}
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}
+applyTheme(document.documentElement.dataset.theme);
+
+function showError(msg) {
+  const el = document.getElementById("error");
+  el.textContent = msg; el.style.display = "block";
+  setTimeout(() => el.style.display = "none", 4000);
+}
+
+async function api(path, body, method) {
+  const res = await fetch(path, body || method
+    ? { method: method || "POST", headers: {"Content-Type": "application/json"},
+        body: body ? JSON.stringify(body) : undefined }
+    : undefined);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function refresh() {
+  try {
+    const data = await api("/api/tickets");
+    tickets = data.tickets; config = data.config;
+    fileErrors = data.errors || [];
+    runs = data.runs || {};
+    // Bucket the volatile idle counter (WB-37) so a silent run does not force
+    // a re-render every 5 seconds — WB-10's no-flicker rule still holds.
+    const runsSnap = Object.fromEntries(Object.entries(data.runs || {}).map(
+      ([id, r]) => [id, {...r, idle_seconds: Math.floor((r.idle_seconds || 0) / 30),
+                         last: undefined, last_ts: undefined}]));
+    const snap = JSON.stringify([data.tickets, data.errors, runsSnap]);
+    if (dragging) {
+      if (snap !== lastSnapshot) { lastSnapshot = snap; pendingRender = true; }
+      return;
+    }
+    if (snap === lastSnapshot) return;
+    lastSnapshot = snap;
+    render();
+  } catch (e) { showError("Board konnte nicht laden: " + e.message); }
+}
+
+function renderFileErrors() {
+  const box = document.getElementById("fileErrors");
+  box.innerHTML = "";
+  if (!fileErrors.length) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  for (const err of fileErrors) {
+    const row = document.createElement("div");
+    row.className = "file-error";
+    row.textContent = `⚠️ Kaputte Ticket-Datei „${err.file}“ — ${err.error}. ` +
+      "Das Ticket fehlt auf dem Board, bis die Datei repariert ist; alle anderen laufen normal.";
+    box.appendChild(row);
+  }
+}
+
+let projectFilter = localStorage.getItem("werkbank-projekt-filter") || "";
+function setProjectFilter(value) {
+  projectFilter = value;
+  localStorage.setItem("werkbank-projekt-filter", value);
+  render();
+}
+
+function updateProjectFilterOptions() {
+  const sel = document.getElementById("projectFilter");
+  const options = [["", "Alle Projekte"]];
+  const known = new Set();
+  for (const [name, p] of Object.entries(config.projects || {})) {
+    options.push([p, "📁 " + name]); known.add(p);
+  }
+  for (const t of tickets)
+    if (t.project && !known.has(t.project)) {
+      options.push([t.project, "📁 " + t.project.split("/").filter(Boolean).pop()]);
+      known.add(t.project);
+    }
+  const sig = JSON.stringify(options);
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.innerHTML = "";
+  for (const [value, label] of options) {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; o.title = value || "";
+    sel.appendChild(o);
+  }
+  if (!options.some(([v]) => v === projectFilter)) projectFilter = "";
+  sel.value = projectFilter;
+}
+
+function render() {
+  renderFileErrors();
+  updateProjectFilterOptions();
+  const visible = projectFilter
+    ? tickets.filter(t => t.project === projectFilter) : tickets;
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  for (const [key, label] of COLUMNS) {
+    const col = document.createElement("div");
+    col.className = "col"; col.dataset.status = key;
+    const cards = visible.filter(t => t.status === key);
+    col.innerHTML = `<h2>${label} <span class="count">· ${cards.length}</span></h2>`;
+    for (const t of cards) col.appendChild(cardEl(t));
+    col.addEventListener("dragover", e => { e.preventDefault(); col.classList.add("dragover"); });
+    col.addEventListener("dragleave", () => col.classList.remove("dragover"));
+    col.addEventListener("drop", async e => {
+      e.preventDefault(); col.classList.remove("dragover");
+      const id = e.dataTransfer.getData("text/plain");
+      const t = tickets.find(x => x.id === id);
+      if (!t || t.status === key) return;
+      try { await api("/api/tickets/" + id, { status: key }); }
+      catch (err) { showError(err.message); }
+      refresh();
+    });
+    board.appendChild(col);
+  }
+}
+
+const STATUS_LABEL = {
+  offen: "noch offen", in_arbeit: "in Arbeit",
+  review: "in Review, noch nicht abgenommen",
+  fehlgeschlagen: "fehlgeschlagen", erledigt: "erledigt",
+};
+
+function linkIds(value) {
+  return (value || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+
+// Exclusion works in both directions: also tickets that name t in THEIR list.
+function exclusionPartners(t) {
+  const named = linkIds(t.nicht_mit);
+  for (const o of tickets)
+    if (o.id !== t.id && linkIds(o.nicht_mit).includes(t.id) && !named.includes(o.id))
+      named.push(o.id);
+  return named;
+}
+
+function linkInfo(t) {
+  const byId = Object.fromEntries(tickets.map(x => [x.id, x]));
+  const waits = linkIds(t.nach).map(id => {
+    const o = byId[id];
+    return { id, label: o ? STATUS_LABEL[o.status] : "unbekannt",
+             blocks: !!o && o.status !== "erledigt" };
+  });
+  const excl = exclusionPartners(t).map(id => {
+    const o = byId[id];
+    return { id, label: o ? STATUS_LABEL[o.status] : "unbekannt",
+             blocks: !!o && o.status === "in_arbeit" };
+  });
+  return { waits, excl,
+           blocked: waits.some(w => w.blocks) || excl.some(x => x.blocks) };
+}
+
+// Mirrors dispatch._queue_blocked_reason — same order, same wording (WB-40).
+function queueWaitReason(t) {
+  const project = t.project || config.default_project || "";
+  const sameProject = x => (x.project || config.default_project || "") === project;
+  if (tickets.some(x => x.status === "in_arbeit" && sameProject(x)))
+    return "wartet, bis das laufende Ticket fertig ist";
+  const nonblocking = (config.nonblocking_review || {})[project];
+  if (!nonblocking && tickets.some(x => x.status === "review" && sameProject(x)))
+    return "wartet auf deine Abnahme in Review";
+  const info = linkInfo(t);
+  if (info.blocked) return "wartet auf verknüpfte Tickets";
+  return "startet gleich …";
+}
+
+function cardEl(t) {
+  const el = document.createElement("div");
+  el.className = "card"; el.draggable = true;
+  // Built element by element (WB-35, F5): ticket data must never be parsed as
+  // HTML — an injected script here would run same-origin and could start
+  // agent runs.
+  const PRIOS = ["hoch", "normal", "niedrig"];
+  const titleEl = document.createElement("div");
+  titleEl.className = "title";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const prio = document.createElement("span");
+  prio.className = "prio " + (PRIOS.includes(t.priority) ? t.priority : "normal");
+  prio.title = "Priorität: " + t.priority;
+  const idEl = document.createElement("span");
+  idEl.className = "id";
+  idEl.textContent = t.id;
+  const assignee = document.createElement("span");
+  assignee.className = "assignee";
+  meta.append(prio, idEl, assignee);
+  el.append(titleEl, meta);
+  el.querySelector(".title").textContent = t.title;
+  el.querySelector(".assignee").textContent = t.assignee;
+  const pname = projectName(t.project)
+    || (t.project ? t.project.split("/").filter(Boolean).pop() : "");
+  if (pname) {
+    const pb = document.createElement("span");
+    pb.className = "link-badge"; pb.textContent = "📁 " + pname; pb.title = t.project;
+    el.querySelector(".assignee").before(pb);
+  }
+  if (t.type === "bug") {
+    const badge = document.createElement("span");
+    badge.className = "bug-badge"; badge.textContent = "BUG"; badge.title = "Bug-Ticket";
+    el.querySelector(".id").after(badge);
+  }
+  const info = linkInfo(t);
+  if (info.waits.length) {
+    const b = document.createElement("span");
+    b.className = "link-badge"; b.textContent = "⛓ " + info.waits.length;
+    b.title = info.waits.map(w => `Wartet auf ${w.id} (${w.label})`).join("\n");
+    el.querySelector(".id").after(b);
+  }
+  if (info.excl.length) {
+    const b = document.createElement("span");
+    b.className = "link-badge"; b.textContent = "🚫 " + info.excl.length;
+    b.title = info.excl.map(x => `Nicht gleichzeitig mit ${x.id} (${x.label})`).join("\n");
+    el.querySelector(".id").after(b);
+  }
+  if (info.blocked && (t.status === "offen" || t.status === "fehlgeschlagen"))
+    el.classList.add("blocked");
+  if (t.status === "zu_bearbeiten") {
+    const line = document.createElement("div");
+    line.className = "run-info";
+    line.textContent = "⏳ " + queueWaitReason(t);
+    el.appendChild(line);
+  }
+  if (t.status === "in_arbeit") {
+    const run = runs[t.id];
+    const line = document.createElement("div");
+    line.className = "run-info";
+    if (t.handover) {
+      line.textContent = "an Chat-Session übergeben: " + t.handover.slice(0, 8)
+        + "… (wartet auf Übernahme)";
+      line.title = "Übergeben an die offene Chat-Session " + t.handover
+        + ". Übernimmt sie nicht rechtzeitig, startet automatisch ein Hintergrund-Lauf.";
+    } else if (run) {
+      const who = run.parent
+        ? (run.forked ? "⑂ Abzweigung von " : "setzt fort: ") + run.parent.slice(0, 8) + "…"
+        : "frische Session";
+      const parts = [`⏱ seit ${run.started}`, who];
+      if (run.steps) parts.push(`${run.steps} Schritte`);
+      if (run.last_tool) parts.push("zuletzt: " + run.last_tool);
+      if (run.tokens) parts.push(Math.round(run.tokens / 1000) + "k Token");
+      const LIMIT_KIND = { five_hour: "5-Stunden", seven_day: "7-Tage" };
+      if (run.limit && (run.limit.blocked || run.limit.percent >= 75))
+        parts.push((run.limit.blocked ? "⛔ Kontingent aufgebraucht" : "⚠️ Kontingent ")
+                   + (run.limit.blocked ? "" : run.limit.percent + " %")
+                   + " (" + (LIMIT_KIND[run.limit.kind] || run.limit.kind) + ")");
+      line.textContent = parts.join(" · ");
+      line.title = (run.parent ? "Eltern-Session: " + run.parent
+                               : "Ohne Vorgänger gestartet")
+        + (run.last ? "\nLetztes Lebenszeichen: " + run.last : "")
+        + "\nProtokoll: /tmp/werkbank-agent-" + t.id + ".log";
+      // Silent for a while, or the agent reported an error → say so plainly.
+      const idle = run.idle_seconds || 0;
+      if (run.error) {
+        line.classList.add("run-alert");
+        line.textContent = "⚠️ Agent meldet Fehler: " + String(run.error).slice(0, 80);
+      } else if (idle >= 180) {
+        line.classList.add("run-alert");
+        line.textContent += ` · ⚠️ seit ${Math.floor(idle / 60)} min keine Rückmeldung`;
+      } else if (idle >= 60) {
+        line.textContent += ` · still seit ${idle}s`;
+      }
+    } else if (t.session) {
+      line.textContent = "wird sichtbar in Chat-Session " + t.session.slice(0, 8) + "… bearbeitet";
+      line.title = "Chat-Session: " + t.session;
+    } else {
+      line.textContent = "kein Board-Lauf aktiv (Warteschlange oder Chat-Bearbeitung)";
+    }
+    el.appendChild(line);
+  }
+  el.addEventListener("dragstart", e => {
+    dragging = true;
+    e.dataTransfer.setData("text/plain", t.id);
+  });
+  el.addEventListener("dragend", () => {
+    dragging = false;
+    if (pendingRender) { pendingRender = false; render(); }
+  });
+  el.addEventListener("click", () => openDetail(t));
+  if (t.status === "fehlgeschlagen") {
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const retry = document.createElement("button");
+    retry.type = "button"; retry.className = "accept"; retry.textContent = "Erneut versuchen";
+    retry.addEventListener("click", async e => {
+      e.stopPropagation();
+      try { await api("/api/tickets/" + t.id, { status: "in_arbeit" }); }
+      catch (err) { showError(err.message); }
+      refresh();
+    });
+    actions.append(retry);
+    el.appendChild(actions);
+  }
+  if (t.status === "review") {
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const accept = document.createElement("button");
+    accept.type = "button"; accept.className = "accept"; accept.textContent = "Annehmen";
+    accept.addEventListener("click", async e => {
+      e.stopPropagation();
+      try { await api("/api/tickets/" + t.id, { status: "erledigt" }); }
+      catch (err) { showError(err.message); }
+      refresh();
+    });
+    const reject = document.createElement("button");
+    reject.type = "button"; reject.textContent = "Ablehnen";
+    reject.addEventListener("click", e => { e.stopPropagation(); openReject(t); });
+    actions.append(accept, reject);
+    el.appendChild(actions);
+  }
+  return el;
+}
+
+function splitBody(body) {
+  // body = "## Beschreibung\n\n...\n\n## Ergebnis\n\n..."
+  const m = body.match(/## Beschreibung\n+([\s\S]*?)\n*## Ergebnis\n+([\s\S]*)/);
+  return m ? { description: m[1].trim(), result: m[2].trim() }
+           : { description: body.trim(), result: "" };
+}
+
+function projectName(path) {
+  for (const [name, p] of Object.entries(config.projects || {}))
+    if (p === path) return name;
+  return null;
+}
+
+function fillProjectSelect(sel, selectedPath) {
+  sel.innerHTML = "";
+  const entries = Object.entries(config.projects || {});
+  for (const [name, p] of entries) {
+    const o = document.createElement("option");
+    o.value = p; o.textContent = name; o.title = p;
+    sel.appendChild(o);
+  }
+  // Tickets pointing at a path outside the list stay valid and visible.
+  if (selectedPath && !entries.some(([, p]) => p === selectedPath)) {
+    const o = document.createElement("option");
+    o.value = selectedPath; o.textContent = selectedPath;
+    sel.appendChild(o);
+  }
+  sel.value = selectedPath || config.default_project
+    || (entries[0] ? entries[0][1] : "");
+}
+
+function openCreate() {
+  const dlg = document.getElementById("create");
+  document.getElementById("createForm").reset();
+  // Active project filter wins over the default (WB-28).
+  fillProjectSelect(document.getElementById("createProject"),
+                    projectFilter || config.default_project);
+  dlg.showModal();
+}
+
+function openProjects() {
+  renderProjectList();
+  document.getElementById("projectForm").reset();
+  document.getElementById("projects").showModal();
+}
+
+function renderProjectList() {
+  const box = document.getElementById("projectList");
+  box.innerHTML = "";
+  const entries = Object.entries(config.projects || {});
+  if (!entries.length) { box.textContent = "(noch keine Projekte angelegt)"; return; }
+  for (const [name, p] of entries) {
+    const row = document.createElement("div");
+    row.style.marginBottom = ".45rem";
+    const head = document.createElement("div");
+    head.textContent = "📁 " + name + " — " + p;
+    row.appendChild(head);
+    const label = document.createElement("label");
+    label.className = "fork-label";
+    label.title = "Aus (Standard): Die Warteschlange „Zu bearbeiten“ pausiert, "
+      + "solange ein Ticket dieses Projekts auf deine Abnahme in Review wartet. "
+      + "An: Das nächste Ticket startet trotzdem — fertige Tickets bleiben "
+      + "weiterhin in Review liegen.";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!(config.nonblocking_review || {})[p];
+    cb.addEventListener("change", async () => {
+      try {
+        const data = await api("/api/projects/review-mode",
+                               { path: p, nonblocking: cb.checked });
+        config.nonblocking_review = data.nonblocking_review;
+      } catch (e) { showError(e.message); cb.checked = !cb.checked; }
+    });
+    label.append(cb, document.createTextNode(" Review blockiert die Warteschlange nicht"));
+    row.appendChild(label);
+    box.appendChild(row);
+  }
+}
+
+let browsedPath = null;
+async function loadBrowse(path) {
+  try {
+    const data = await api("/api/browse" + (path ? "?path=" + encodeURIComponent(path) : ""));
+    browsedPath = data.path;
+    document.getElementById("browsePath").textContent = data.path;
+    const list = document.getElementById("browseList");
+    list.innerHTML = "";
+    if (data.parent) {
+      const up = document.createElement("div");
+      up.textContent = "⬆️ .. (übergeordneter Ordner)";
+      up.addEventListener("click", () => loadBrowse(data.parent));
+      list.appendChild(up);
+    }
+    for (const d of data.dirs) {
+      const row = document.createElement("div");
+      row.textContent = "📁 " + d.name;
+      row.addEventListener("click", () => loadBrowse(d.path));
+      list.appendChild(row);
+    }
+    if (!data.dirs.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "(keine Unterordner)";
+      empty.style.cursor = "default"; empty.style.color = "var(--muted)";
+      list.appendChild(empty);
+    }
+    return true;
+  } catch (e) { showError(e.message); return false; }
+}
+async function openBrowse() {
+  const current = document.getElementById("projectForm").path.value.trim();
+  document.getElementById("browse").showModal();
+  const ok = await loadBrowse(current || null);
+  if (!ok && current) await loadBrowse(null);  // bad input → start at home
+}
+function chooseBrowsed() {
+  if (browsedPath) document.getElementById("projectForm").path.value = browsedPath;
+  document.getElementById("browse").close();
+}
+
+document.getElementById("projectForm").addEventListener("submit", async e => {
+  e.preventDefault();  // keep the dialog open for adding several projects
+  const f = document.getElementById("projectForm");
+  try {
+    const data = await api("/api/projects", { name: f.name.value, path: f.path.value });
+    config.projects = data.projects;
+    f.reset();
+    renderProjectList();
+  } catch (err) { showError(err.message); }
+});
+
+document.getElementById("createForm").addEventListener("submit", async () => {
+  const formEl = document.getElementById("createForm");
+  const body = Object.fromEntries(new FormData(formEl).entries());
+  body.fork = formEl.fork.checked ? "ja" : "nein";
+  try {
+    await api("/api/tickets", body);
+    refresh();
+  } catch (e) { showError(e.message); }
+});
+
+let detailTicket = null;
+function openDetail(t) {
+  detailTicket = t;
+  const form = document.getElementById("detailForm");
+  const parts = splitBody(t.body);
+  document.getElementById("detailId").textContent = t.id + " · angelegt " + t.created;
+  form.title.value = t.title;
+  form.description.value = parts.description;
+  form.type.value = t.type || "aufgabe";
+  form.assignee.value = t.assignee;
+  form.priority.value = t.priority;
+  fillProjectSelect(document.getElementById("detailProject"), t.project);
+  form.nach.value = t.nach || "";
+  form.nicht_mit.value = t.nicht_mit || "";
+  form.fork.checked = t.fork === "ja";
+  document.getElementById("detailResult").textContent = parts.result || "(noch offen)";
+  const sess = document.getElementById("detailSession");
+  const run = runs[t.id];
+  const lines = [];
+  if (run) lines.push((run.forked ? "Läuft als Abzweigung von Session: " : "Setzt Session fort: ")
+                      + (run.parent || "(frisch)") + " · seit " + run.started);
+  if (t.session) lines.push("Bearbeitet von Session: " + t.session);
+  if (run || t.session) lines.push("Lauf-Protokoll: /tmp/werkbank-agent-" + t.id + ".log");
+  sess.textContent = lines.join("\n");
+  document.getElementById("detail").showModal();
+}
+
+document.getElementById("detailForm").addEventListener("submit", async () => {
+  const form = document.getElementById("detailForm");
+  const parts = splitBody(detailTicket.body);
+  const body = "## Beschreibung\n\n" + form.description.value.trim() +
+               "\n\n## Ergebnis\n\n" + (parts.result || "_(noch offen)_") + "\n";
+  try {
+    await api("/api/tickets/" + detailTicket.id, {
+      title: form.title.value, type: form.type.value, assignee: form.assignee.value,
+      priority: form.priority.value, project: form.project.value,
+      nach: form.nach.value, nicht_mit: form.nicht_mit.value,
+      fork: form.fork.checked ? "ja" : "nein", body,
+      version: detailTicket.version,
+    });
+    refresh();
+  } catch (e) { showError(e.message); refresh(); }
+});
+
+async function deleteTicket() {
+  if (!detailTicket) return;
+  const sure = confirm(detailTicket.id + " – „" + detailTicket.title + "“ wirklich löschen?\n"
+    + "(Über die Sicherungs-Historie bleibt es wiederherstellbar.)");
+  if (!sure) return;
+  try {
+    await api("/api/tickets/" + detailTicket.id, null, "DELETE");
+    document.getElementById("detail").close();
+    refresh();
+  } catch (e) { showError(e.message); }
+}
+
+let rejectTicket = null;
+function openReject(t) {
+  rejectTicket = t;
+  document.getElementById("rejectTitle").textContent = t.id + " ablehnen";
+  document.getElementById("rejectForm").reset();
+  document.getElementById("reject").showModal();
+}
+
+document.getElementById("rejectForm").addEventListener("submit", async e => {
+  const form = document.getElementById("rejectForm");
+  const reason = form.reason.value.trim();
+  if (!reason) { e.preventDefault(); showError("Bitte einen Grund angeben."); return; }
+  const parts = splitBody(rejectTicket.body);
+  const today = new Date().toISOString().slice(0, 10);
+  const body = "## Beschreibung\n\n" + parts.description +
+               "\n\n**Ablehnung (" + today + "):** " + reason +
+               "\n\n## Ergebnis\n\n" + (parts.result || "_(noch offen)_") + "\n";
+  try {
+    await api("/api/tickets/" + rejectTicket.id,
+              { status: "offen", body, version: rejectTicket.version });
+    refresh();
+  } catch (err) { showError(err.message); refresh(); }
+});
+
+refresh();
+setInterval(refresh, 5000);  // pick up changes agents make to the files
+</script>
+</body>
+</html>

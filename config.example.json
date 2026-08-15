@@ -1,0 +1,13 @@
+{
+  "port": 8765,
+  "host": "127.0.0.1",
+  "default_project": "/pfad/zu/deinem/projekt",
+  "agent_permission_mode": "acceptEdits",
+  "agent_allowed_tools": "Bash",
+  "agent_timeout_minutes": 30,
+  "chat_handover_minutes": 5,
+  "projects": {
+    "Beispielprojekt": "/pfad/zu/deinem/projekt"
+  },
+  "nonblocking_review": {}
+}

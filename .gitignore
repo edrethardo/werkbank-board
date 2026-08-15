@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+graft/
+state.json
+.config.lock
+tickets/.lock
+config.json
+state.json
