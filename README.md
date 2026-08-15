@@ -38,14 +38,131 @@ ticket is handed over there and worked **visibly in front of you**.
 - **Ticket links**: "must wait for" ordering and mutual exclusion, enforced at
   start and dequeue time.
 
+## Getting it running
+
+### Requirements
+
+- **Claude Code**, installed and logged in — `claude --version` must work in a
+  terminal, and `claude -p "hi"` must answer. The board shells out to that
+  binary; agent runs consume your Claude quota.
+- **Python 3.10+** (standard library only, nothing to install).
+- **Linux or macOS.** `fcntl` file locking makes it Unix-only today.
+- **git**, if you want the ticket history that this design assumes.
+
+### 1. Get the code and configure it
+
+```bash
+git clone https://github.com/edrethardo/werkbank-board.git werkbank
+cd werkbank
+cp config.example.json config.json
+```
+
+Edit `config.json`: set `default_project` to the absolute path of the project
+your tickets are about, and list your projects under `projects` (name → path).
+You can also do this later in the board's **📁 Projekte** dialog, which has a
+folder picker. `config.json` is gitignored — it is yours, not the repo's.
+
+### 2. Start the board
+
+```bash
+python3 src/werkbank/server.py
+```
+
+Open <http://127.0.0.1:8765>. That is the whole installation — one process, no
+database, no build step. Stop it with Ctrl-C.
+
+### 3. Create a ticket and let an agent work it
+
+1. **+ Neues Ticket** — title, description, target project, priority.
+2. Drag it from **Offen** to **In Arbeit**.
+3. The board starts `claude -p` in that project's directory and writes what it
+   is doing onto the card (steps, last tool, tokens, quota).
+4. When the agent is done, its honest summary lands in the ticket's *Ergebnis*
+   and the card moves to **Review** — failures included, with the reason.
+5. You press **Annehmen** (→ Erledigt) or **Ablehnen** with a reason (→ back to
+   Offen, your reason recorded in the ticket).
+
+Nothing starts by itself: only your drag (or an explicit chat request)
+dispatches an agent.
+
+### 4. Talk to it from Claude Code (optional but this is the point)
+
+Open the Werkbank folder in Claude Code. The repo ships project skills in
+`.claude/skills/`, so you can say things like:
+
+- *"Erstelle ein Ticket für …"* — the session drafts and files it properly.
+- *"Arbeite die Tickets ab"* / *"erledige WB-7"* — works tickets in the chat,
+  visibly.
+- *"Starte das Board"* — starts/restarts the server and verifies it answers.
+
+To let **other projects'** Claude sessions pull their own tickets, install the
+two user-level skills once:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -r .claude/skills/_user-level/werkbank-pull-ticket ~/.claude/skills/
+cp -r .claude/skills/_user-level/werkbank-report-bug  ~/.claude/skills/
+```
+
+Then edit the repo path at the top of both `SKILL.md` files to wherever you
+cloned Werkbank. In any project session you can now say *"zieh dir dein
+Ticket"* or *"ich hab einen Bug gefunden"*.
+
+### 5. Start it automatically (optional)
+
+On a systemd machine, `~/.config/systemd/user/werkbank-board.service`:
+
+```ini
+[Unit]
+Description=Werkbank Board
+
+[Service]
+ExecStart=/usr/bin/python3 %h/code/werkbank/src/werkbank/server.py
+WorkingDirectory=%h/code/werkbank
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now werkbank-board
+```
+
+The board then starts at login and restarts itself after a crash. Logs:
+`journalctl --user -u werkbank-board`; agent run logs live in
+`~/.local/state/werkbank/logs/`.
+
+### Configuration reference
+
+| Key | Meaning |
+|---|---|
+| `port`, `host` | Where the board listens. Leave `host` at `127.0.0.1` — see Security. |
+| `default_project` | Target project for new tickets that name none. |
+| `projects` | Named project list (name → absolute path) shown in the dialogs. |
+| `agent_permission_mode` | Permission mode for dispatched runs (default `acceptEdits`). |
+| `agent_allowed_tools` | Extra allowed tools for dispatched runs (default `Bash`). |
+| `agent_timeout_minutes` | Hard limit per run (default 30). |
+| `chat_handover_minutes` | How long a live chat session may claim a handed-over ticket before a background run takes over (default 5). |
+| `nonblocking_review` | Per project: may the queue continue while a ticket waits in Review? |
+
+### Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+122 tests, no dependencies, no network access needed.
+
 ## How it's built
 
-Python 3 standard library only (no dependencies), one `http.server` process on
-`127.0.0.1:8765` (a systemd user service starts it at login), one static HTML
-page. `python3 -m unittest discover -s tests` runs the whole suite (108 tests).
-`fcntl` makes it Unix-only today. See `docs/dev/stack.md` for the reasoning and
-`docs/journal/` for the complete, honest build history — every feature, every
-bug, every wrong turn, written down as it happened.
+Python 3 standard library only, one `http.server` process, one static HTML
+page. See `docs/dev/stack.md` for the reasoning and `docs/journal/` for the
+complete, honest build history — every feature, every bug, every wrong turn,
+written down as it happened (including a security review that found a
+CSRF→RCE chain in this very tool and how it was closed).
 
 ## Security — read this before you deploy it
 
@@ -68,8 +185,9 @@ is built around that assumption:
   extra frontmatter, the folder picker is confined to your home directory plus
   registered projects, and agent logs are written to a private `0700`
   directory.
-- Publishing this repository publishes `tickets/` — the live board, including
-  future tickets. Fork the code, not the board, if you don't want that.
+- Publishing a Werkbank checkout publishes `tickets/` — the live board,
+  including future tickets. Fork the code, not the board, if you don't want
+  that.
 
 If you hand the board to anyone else, or point it at content you did not
 write, treat that as granting shell access and tighten
