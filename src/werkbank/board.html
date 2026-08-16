@@ -2,7 +2,12 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d2125">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Werkbank">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 180 180\'%3E%3Crect width=\'180\' height=\'180\' fill=\'%231d2125\'/%3E%3Ctext y=\'128\' x=\'90\' font-size=\'110\' text-anchor=\'middle\'%3E%F0%9F%9B%A0%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <title>Werkbank</title>
 <style>
   /* Dark is the default; the toggle stores "light" in localStorage. */
@@ -67,9 +72,15 @@
                          background: var(--bg); color: var(--text); }
   .card-actions button.accept { background: var(--accent); color: #fff; border: 0; }
   .card-actions button:hover { filter: brightness(1.08); }
+  /* WB-45: touch devices cannot drag — every card carries a move control. */
+  .card-move { display: none; width: 100%; margin-top: .5rem; padding: .5rem;
+               font-size: 16px; border-radius: 4px; border: 1px solid var(--border);
+               background: var(--bg); color: var(--text); }
+  @media (max-width: 820px), (hover: none) { .card-move { display: block; } }
   .run-info { margin-top: .5rem; font-size: .72rem; color: var(--muted);
               border-top: 1px dashed var(--border); padding-top: .4rem; }
   .run-info.run-alert { color: var(--hoch); font-weight: 600; }
+  .card.paused { border: 1px solid var(--hoch); }
   #detailSession { font-size: .8rem; color: var(--muted); margin-top: .3rem;
                    white-space: pre-line; }
   dialog { border: 0; border-radius: 8px; background: var(--card-bg); color: var(--text);
@@ -94,6 +105,8 @@
   #detail .result { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
                     padding: .7rem; font-size: .85rem; white-space: pre-wrap; max-height: 14rem;
                     overflow: auto; margin-top: .2rem; }
+  .gate-row { margin-top: 10px; }
+  .gate-hint { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
   .fork-label { display: flex; align-items: center; gap: .45rem; margin: .7rem 0 .2rem;
                 font-size: .85rem; cursor: help; }
   .fork-label input { width: auto; }
@@ -105,6 +118,52 @@
   .file-error { border: 1px solid var(--hoch); border-left: 4px solid var(--hoch);
                 border-radius: 6px; background: var(--card-bg); color: var(--text);
                 padding: .55rem .8rem; font-size: .85rem; margin-bottom: .4rem; }
+  /* Phone view (WB-45): one status at a time, chips to switch, thumb-sized. */
+  #statusBar { display: none; gap: .4rem; overflow-x: auto; padding: .6rem .7rem;
+               scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  #statusBar::-webkit-scrollbar { display: none; }
+  .chip { flex: 0 0 auto; padding: .5rem .8rem; border-radius: 999px;
+          border: 1px solid var(--border); background: var(--col-bg);
+          color: var(--muted); font-size: .85rem; cursor: pointer; }
+  .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .chip .count { opacity: .85; font-weight: 600; }
+  #fab { display: none; position: fixed; right: 1rem; bottom: 1.2rem; z-index: 5;
+         width: 3.4rem; height: 3.4rem; border-radius: 50%; border: 0;
+         background: var(--accent); color: #fff; font-size: 1.9rem; line-height: 1;
+         box-shadow: 0 6px 18px var(--shadow); cursor: pointer; }
+  .empty-hint { padding: 2rem 1rem; text-align: center; color: var(--muted);
+                font-size: .9rem; }
+  .phone-only { display: none; }
+  .hide-phone { display: inline; }
+  /* Phone layout (WB-44): columns stack, targets get thumb-sized. */
+  @media (max-width: 820px) {
+    #board { grid-template-columns: 1fr; gap: .6rem; padding: .7rem; }
+    .col { min-height: 0; }
+    header { flex-wrap: wrap; gap: .5rem; padding: .6rem .7rem; }
+    header h1 { font-size: 1rem; }
+    select.ghost { max-width: 9rem; }
+    .card { padding: .8rem; }
+    .card .title { font-size: 1rem; }
+    .card-actions { flex-wrap: wrap; }
+    .card-actions button { padding: .7rem .6rem; font-size: .95rem; min-height: 2.8rem; }
+    /* One status at a time: chips replace the six stacked columns. */
+    #statusBar { display: flex; }
+    #fab { display: block; }
+    .phone-only { display: flex; }
+    .hide-phone { display: none !important; }
+    #board { grid-template-columns: 1fr; gap: .5rem; padding: 0 .7rem 5rem; }
+    .col { background: none; padding: 0; }
+    .col h2 { display: none; }
+    .card { padding: .9rem; margin-bottom: .6rem; cursor: pointer; }
+    .card .meta { font-size: .8rem; }
+    /* Detail as a full-screen sheet, not a tiny dialog. */
+    dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+             border-radius: 0; resize: none; padding: 1rem 1rem 2rem; }
+    dialog#login { height: auto; border-radius: 12px; width: 92vw; margin: auto; }
+    /* iOS zooms in when a focused field is under 16px — keep them at 16px. */
+    form input, form textarea, form select { font-size: 16px; }
+    dialog { width: 96vw; padding: .9rem; }
+  }
   #error { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
            background: var(--hoch); color: #fff; padding: .6rem 1rem; border-radius: 6px;
            display: none; }
@@ -120,12 +179,13 @@
   <span class="spacer"></span>
   <select id="projectFilter" class="ghost" title="Board auf ein Projekt eingrenzen"
           onchange="setProjectFilter(this.value)"></select>
-  <button class="ghost" onclick="openProjects()" title="Projekte verwalten">📁 Projekte</button>
+  <button class="ghost" onclick="openProjects()" title="Projekte verwalten">📁<span class="hide-phone"> Projekte</span></button>
   <button class="ghost" id="themeToggle" onclick="toggleTheme()"></button>
-  <button class="primary" onclick="openCreate()">+ Neues Ticket</button>
+  <button class="primary hide-phone" onclick="openCreate()">+ Neues Ticket</button>
 </header>
 
 <div id="fileErrors" style="display:none"></div>
+<div id="statusBar"></div>
 <div id="board"></div>
 
 <dialog id="create">
@@ -148,6 +208,13 @@
         </select></div>
     </div>
     <label>Projekt</label><select name="project" id="createProject"></select>
+    <div class="gate-row" hidden>
+      <label>Prüfung — sie entscheidet, ob die Arbeit gilt</label>
+      <select name="gate"></select>
+      <p class="gate-hint">opencode arbeitet auf deinem eigenen Rechner. Was es
+        selbst über seine Arbeit sagt, zählt nicht — nur diese Prüfung.</p>
+    </div>
+
     <div class="row">
       <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
         <input name="nach" autocomplete="off"></div>
@@ -184,6 +251,13 @@
         </select></div>
     </div>
     <label>Projekt</label><select name="project" id="detailProject"></select>
+    <div class="gate-row" hidden>
+      <label>Prüfung — sie entscheidet, ob die Arbeit gilt</label>
+      <select name="gate"></select>
+      <p class="gate-hint">opencode arbeitet auf deinem eigenen Rechner. Was es
+        selbst über seine Arbeit sagt, zählt nicht — nur diese Prüfung.</p>
+    </div>
+
     <div class="row">
       <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
         <input name="nach" autocomplete="off"></div>
@@ -212,7 +286,7 @@
     <label>Name</label><input name="name" required autocomplete="off" placeholder="z. B. Mein Spiel">
     <label>Ordner</label>
     <div class="row">
-      <div><input name="path" required autocomplete="off" placeholder="~/code/mein-spiel"></div>
+      <div><input name="path" required autocomplete="off" placeholder="/home/USER/code/mein-spiel"></div>
       <button type="button" class="ghost" style="flex:0" onclick="openBrowse()">📂 Durchsuchen</button>
     </div>
     <div class="actions">
@@ -232,6 +306,30 @@
   </div>
 </dialog>
 
+<dialog id="login">
+  <h3>🛠️ Werkbank — Anmelden</h3>
+  <form id="loginForm" method="dialog">
+    <label>Passwort</label>
+    <input name="password" type="password" required autocomplete="current-password">
+    <div class="actions">
+      <button type="submit" class="primary">Anmelden</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="bug">
+  <h3 id="bugTitle"></h3>
+  <form id="bugForm" method="dialog">
+    <label>Was stimmt nicht?</label>
+    <textarea name="description" required
+              placeholder="Was passiert, was hättest du erwartet?"></textarea>
+    <div class="actions">
+      <button type="button" onclick="document.getElementById('bug').close()">Abbrechen</button>
+      <button type="submit" class="primary">Bug anlegen</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="reject">
   <h3 id="rejectTitle"></h3>
   <form id="rejectForm" method="dialog">
@@ -244,6 +342,8 @@
   </form>
 </dialog>
 
+<button id="fab" onclick="openCreate()" title="Neues Ticket" aria-label="Neues Ticket">+</button>
+
 <div id="error"></div>
 
 <script>
@@ -252,7 +352,8 @@ const COLUMNS = [
   ["in_arbeit", "In Arbeit"], ["review", "Review"],
   ["fehlgeschlagen", "Fehlgeschlagen"], ["erledigt", "Erledigt"],
 ];
-let tickets = [], config = {}, fileErrors = [], runs = {};
+let tickets = [], config = {}, fileErrors = [], runs = {}, pauseReason = null,
+    setupWarning = null;
 // WB-10: only touch the DOM when the data really changed, never mid-drag.
 let lastSnapshot = "", dragging = false, pendingRender = false;
 
@@ -280,9 +381,33 @@ async function api(path, body, method) {
         body: body ? JSON.stringify(body) : undefined }
     : undefined);
   const data = await res.json();
+  if (res.status === 401) {
+    openLogin();
+    const err = new Error(data.error || "Bitte anmelden");
+    err.needsLogin = true;
+    throw err;
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
+
+function openLogin() {
+  const dlg = document.getElementById("login");
+  if (!dlg.open) { document.getElementById("loginForm").reset(); dlg.showModal(); }
+}
+
+document.getElementById("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = document.getElementById("loginForm");
+  try {
+    await api("/api/login", { password: form.password.value });
+    document.getElementById("login").close();
+    lastSnapshot = "";          // force a full render after logging in
+    refresh();
+  } catch (err) {
+    if (!err.needsLogin) showError(err.message);
+  }
+});
 
 async function refresh() {
   try {
@@ -290,12 +415,15 @@ async function refresh() {
     tickets = data.tickets; config = data.config;
     fileErrors = data.errors || [];
     runs = data.runs || {};
+    pauseReason = data.pause || null;
+    setupWarning = data.setup_warning || null;
     // Bucket the volatile idle counter (WB-37) so a silent run does not force
     // a re-render every 5 seconds — WB-10's no-flicker rule still holds.
     const runsSnap = Object.fromEntries(Object.entries(data.runs || {}).map(
       ([id, r]) => [id, {...r, idle_seconds: Math.floor((r.idle_seconds || 0) / 30),
                          last: undefined, last_ts: undefined}]));
-    const snap = JSON.stringify([data.tickets, data.errors, runsSnap]);
+    const snap = JSON.stringify([data.tickets, data.errors, runsSnap,
+                                 data.pause, data.setup_warning]);
     if (dragging) {
       if (snap !== lastSnapshot) { lastSnapshot = snap; pendingRender = true; }
       return;
@@ -303,14 +431,32 @@ async function refresh() {
     if (snap === lastSnapshot) return;
     lastSnapshot = snap;
     render();
-  } catch (e) { showError("Board konnte nicht laden: " + e.message); }
+  } catch (e) {
+    if (!e.needsLogin) showError("Board konnte nicht laden: " + e.message);
+  }
 }
 
 function renderFileErrors() {
   const box = document.getElementById("fileErrors");
   box.innerHTML = "";
-  if (!fileErrors.length) { box.style.display = "none"; return; }
+  if (!fileErrors.length && !pauseReason && !setupWarning) {
+    box.style.display = "none"; return;
+  }
   box.style.display = "block";
+  if (setupWarning) {
+    const row = document.createElement("div");
+    row.className = "file-error";
+    row.textContent = "⚠️ " + setupWarning;
+    box.appendChild(row);
+  }
+  if (pauseReason) {
+    const row = document.createElement("div");
+    row.className = "file-error";
+    row.style.borderColor = "var(--normal)";
+    row.style.borderLeftColor = "var(--normal)";
+    row.textContent = "⏸ " + pauseReason;
+    box.appendChild(row);
+  }
   for (const err of fileErrors) {
     const row = document.createElement("div");
     row.className = "file-error";
@@ -352,18 +498,164 @@ function updateProjectFilterOptions() {
   sel.value = projectFilter;
 }
 
+// WB-67 + WB-68: swiping left/right moves to the next/previous status. Only on
+// the phone view, only for clearly horizontal gestures, only when the gesture
+// started on empty board area — vertical scrolling and taps on buttons must
+// keep working. A pinch or a second finger cancels the swipe cleanly.
+// WB-68b: user reported "löst zu schwer aus". 60 px + strict 2:1 ratio meant
+// a realistic wisch (100 px across, 60 px drift down) was silently rejected.
+// Loosened to 40 px and 1.5× — still keeps taps and vertical scrolls out.
+// WB-68c: user reported "weiterhin unzuverlässig". Root cause was the
+// synthetic click the browser fires after a touchend that did not move far
+// enough to trip its own tap-slop (~10–15 px on iOS Safari). A wisch that
+// started on a card ended up opening the detail dialog INSTEAD OF (or, at
+// short lengths, IN ADDITION TO) shifting columns — from the user's angle
+// this looked exactly like "swipe didn't take". Fix: any horizontal-dominant
+// touch of at least CLICK_SUPPRESS_MIN pixels arms a short suppression
+// window (`_swipeSuppressUntil`) that the card click handler reads before
+// opening the detail. See cardEl for the read side; buttons/selects are not
+// affected because the touchstart filter above already refuses to arm the
+// gesture from a control.
+const SWIPE_MIN = 40;   // pixels — the ONE place the threshold lives (WB-68)
+const SWIPE_RATIO = 1.5;  // dx must exceed dy * this to count as horizontal
+const CLICK_SUPPRESS_MIN = 15;  // horizontal-dominant touches ≥ this suppress the follow-up click
+const CLICK_SUPPRESS_MS = 400;  // longer than the browser's own click-delay
+let _swipeSuppressUntil = 0;    // read by cardEl's click handler (WB-68c)
+
+function wasRecentSwipe() {
+  return typeof performance !== "undefined"
+    && performance.now() < _swipeSuppressUntil;
+}
+
+function installSwipe() {
+  // WB-68d: the swipe used to listen on #board — but #board's box only
+  // reaches the bottom of the last card. A wisch over the empty area below
+  // the list, over the header, or across the status chips landed on <body>
+  // and was never heard. Listen on the whole viewport instead; isPhone() in
+  // shiftStatus already keeps the desktop out, and the target filter below
+  // still refuses gestures that start on buttons, selects or inside dialogs.
+  const root = document.documentElement;
+  let x0 = null, y0 = null;
+  const reset = () => { x0 = null; };
+  root.addEventListener("touchstart", e => {
+    // WB-68: never start a swipe from a control element — tapping a button or
+    // opening a select must not double as a column change. WB-68d also
+    // refuses when a native <dialog> is open, so a wisch inside a detail or
+    // login dialog does not change the column behind it.
+    if (e.target.closest("button, select, input, textarea, a")) { reset(); return; }
+    if (document.querySelector("dialog[open]")) { reset(); return; }
+    if (e.touches.length !== 1) { reset(); return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+  }, { passive: true });
+  root.addEventListener("touchmove", e => {
+    if (e.touches.length > 1) reset();     // pinch cancels the swipe
+  }, { passive: true });
+  root.addEventListener("touchcancel", reset, { passive: true });
+  root.addEventListener("touchend", e => {
+    if (x0 === null || !e.changedTouches.length) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    const dy = e.changedTouches[0].clientY - y0;
+    reset();
+    // WB-68c: arm the follow-up-click suppression FIRST, even for short
+    // horizontal drags that do not qualify as a full swipe — otherwise the
+    // user's short-and-almost-swipe still opens the detail dialog.
+    if (Math.abs(dx) >= CLICK_SUPPRESS_MIN && Math.abs(dx) > Math.abs(dy)) {
+      _swipeSuppressUntil = performance.now() + CLICK_SUPPRESS_MS;
+    }
+    if (Math.abs(dx) < SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * SWIPE_RATIO) return;
+    shiftStatus(dx < 0 ? 1 : -1);
+  }, { passive: true });
+}
+
+function shiftStatus(step) {
+  if (!isPhone()) return;
+  const i = COLUMNS.findIndex(([k]) => k === phoneStatus);
+  const next = COLUMNS[Math.min(COLUMNS.length - 1, Math.max(0, i + step))];
+  if (!next || next[0] === phoneStatus) return;   // clamped at the ends
+  phonePickedByUser = true;
+  phoneStatus = next[0];
+  localStorage.setItem("werkbank-phone-status", phoneStatus);
+  render();
+}
+
+function isPhone() {
+  return window.matchMedia("(max-width: 820px), (hover: none)").matches;
+}
+
+let phoneStatus = localStorage.getItem("werkbank-phone-status") || "offen";
+let phonePickedByUser = false;   // an explicit tap always wins over the fallback
+
+function renderPhone(visible) {
+  const bar = document.getElementById("statusBar");
+  bar.innerHTML = "";
+  if (!COLUMNS.some(([k]) => k === phoneStatus)) phoneStatus = "offen";
+  // Never open on an empty screen: if the remembered status is empty but other
+  // tickets exist, show the first status that has any (WB-45 feedback).
+  if (!phonePickedByUser && !visible.some(t => t.status === phoneStatus)) {
+    const firstFull = COLUMNS.find(([k]) => visible.some(t => t.status === k));
+    if (firstFull) phoneStatus = firstFull[0];
+  }
+  for (const [key, label] of COLUMNS) {
+    const count = visible.filter(t => t.status === key).length;
+    const chip = document.createElement("button");
+    chip.className = "chip" + (key === phoneStatus ? " active" : "");
+    chip.textContent = label + " ";
+    const c = document.createElement("span");
+    c.className = "count"; c.textContent = count;
+    chip.appendChild(c);
+    chip.addEventListener("click", () => {
+      phonePickedByUser = true;
+      phoneStatus = key;
+      localStorage.setItem("werkbank-phone-status", key);
+      render();
+    });
+    bar.appendChild(chip);
+    if (key === phoneStatus) requestAnimationFrame(
+      () => chip.scrollIntoView({ inline: "center", block: "nearest" }));
+  }
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  const col = document.createElement("div");
+  col.className = "col"; col.dataset.status = phoneStatus;
+  const cards = visible.filter(t => t.status === phoneStatus);
+  if (!cards.length) {
+    const hint = document.createElement("div");
+    hint.className = "empty-hint";
+    hint.textContent = visible.length
+      ? "Keine Tickets in „" + (COLUMNS.find(([k]) => k === phoneStatus) || [,""])[1]
+        + "“. Tipp oben auf einen anderen Schalter."
+      : "Noch keine Tickets. Mit dem + unten rechts legst du eins an.";
+    col.appendChild(hint);
+  }
+  for (const t of cards) col.appendChild(cardEl(t));
+  board.appendChild(col);
+}
+
 function render() {
   renderFileErrors();
   updateProjectFilterOptions();
   const visible = projectFilter
     ? tickets.filter(t => t.project === projectFilter) : tickets;
+  if (isPhone()) { renderPhone(visible); return; }
+  document.getElementById("statusBar").innerHTML = "";
   const board = document.getElementById("board");
   board.innerHTML = "";
+  const noTicketsAtAll = !visible.length;
   for (const [key, label] of COLUMNS) {
     const col = document.createElement("div");
     col.className = "col"; col.dataset.status = key;
     const cards = visible.filter(t => t.status === key);
     col.innerHTML = `<h2>${label} <span class="count">· ${cards.length}</span></h2>`;
+    // WB-55: a truly empty board (no visible tickets in any column) gave a
+    // stranger no idea what to do — offer the first step in the Offen column.
+    if (noTicketsAtAll && key === "offen") {
+      const hint = document.createElement("div");
+      hint.className = "empty-hint";
+      hint.textContent = "Noch keine Tickets. Klick oben auf „+ Neues Ticket“ "
+        + "— Titel eintragen, kurz beschreiben, und du hast eins. Danach ziehst "
+        + "du es nach „In Arbeit“ und ein Agent bearbeitet es.";
+      col.appendChild(hint);
+    }
     for (const t of cards) col.appendChild(cardEl(t));
     col.addEventListener("dragover", e => { e.preventDefault(); col.classList.add("dragover"); });
     col.addEventListener("dragleave", () => col.classList.remove("dragover"));
@@ -415,8 +707,19 @@ function linkInfo(t) {
            blocked: waits.some(w => w.blocks) || excl.some(x => x.blocks) };
 }
 
-// Mirrors dispatch._queue_blocked_reason — same order, same wording (WB-40).
+// Mirrors dispatch._queue_blocked_reason — same order, same wording (WB-40),
+// plus the per-assortment lane that only the dispatcher knows (WB-92):
+// "startet gleich" is true only when the ticket's own kind has no run running.
 function queueWaitReason(t) {
+  if (pauseReason) return pauseReason;
+  // WB-92: the run of the ticket's own assortment is the one that must finish
+  // first — a Claude run in another project no longer means "startet gleich".
+  const own = t.assignee === "opencode" ? "opencode" : "claude";
+  const busy = Object.entries(runs).find(([, r]) => (r.model || "claude") === own);
+  if (busy)
+    return own === "opencode"
+      ? "wartet, bis der laufende opencode-Lauf fertig ist"
+      : "wartet, bis der laufende Agent fertig ist";
   const project = t.project || config.default_project || "";
   const sameProject = x => (x.project || config.default_project || "") === project;
   if (tickets.some(x => x.status === "in_arbeit" && sameProject(x)))
@@ -487,6 +790,7 @@ function cardEl(t) {
   }
   if (t.status === "in_arbeit") {
     const run = runs[t.id];
+    if (pauseReason && !run) el.classList.add("paused");
     const line = document.createElement("div");
     line.className = "run-info";
     if (t.handover) {
@@ -523,6 +827,12 @@ function cardEl(t) {
       } else if (idle >= 60) {
         line.textContent += ` · still seit ${idle}s`;
       }
+    } else if (pauseReason) {
+      // WB-69: quota stop — the ticket keeps its place, shown red with the time.
+      line.classList.add("run-alert");
+      line.textContent = "⛔ " + pauseReason;
+      line.title = "Der Lauf wurde vom Nutzungslimit gestoppt und wird "
+        + "automatisch fortgesetzt — du musst nichts tun.";
     } else if (t.session) {
       line.textContent = "wird sichtbar in Chat-Session " + t.session.slice(0, 8) + "… bearbeitet";
       line.title = "Chat-Session: " + t.session;
@@ -539,7 +849,11 @@ function cardEl(t) {
     dragging = false;
     if (pendingRender) { pendingRender = false; render(); }
   });
-  el.addEventListener("click", () => openDetail(t));
+  // WB-68c: a card click that arrives right after a horizontal touch is the
+  // browser's synthetic tap-fallback — the user meant to swipe. Ignore it,
+  // or a short-and-almost-swipe still opens the detail dialog and looks
+  // like "swipe didn't take".
+  el.addEventListener("click", () => { if (wasRecentSwipe()) return; openDetail(t); });
   if (t.status === "fehlgeschlagen") {
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -554,6 +868,21 @@ function cardEl(t) {
     actions.append(retry);
     el.appendChild(actions);
   }
+  const quick = quickActions(t);
+  if (quick) el.appendChild(quick);
+  if (t.status === "erledigt" || t.status === "review") {
+    // WB-71: report a bug straight from the finished ticket — the new ticket
+    // inherits its context, so the agent fixing it does not start blind.
+    const row = document.createElement("div");
+    row.className = "card-actions";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "🐞 Bug melden";
+    b.addEventListener("click", e => { e.stopPropagation(); openBug(t); });
+    row.appendChild(b);
+    el.appendChild(row);
+  }
+  el.appendChild(moveControl(t));
   if (t.status === "review") {
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -572,6 +901,60 @@ function cardEl(t) {
     el.appendChild(actions);
   }
   return el;
+}
+
+// WB-45: the one or two moves you actually make from the couch, as buttons.
+const QUICK_MOVES = {
+  offen: [["▶ Starten", "in_arbeit", true], ["≡ Warteschlange", "zu_bearbeiten", false]],
+  zu_bearbeiten: [["▶ Jetzt starten", "in_arbeit", true], ["↩ Zurück", "offen", false]],
+  erledigt: [["↩ Wieder öffnen", "offen", false]],   // + Bug-Knopf, s. u.
+};
+
+function quickActions(t) {
+  const moves = QUICK_MOVES[t.status];
+  if (!moves) return null;
+  const row = document.createElement("div");
+  row.className = "card-actions phone-only";
+  for (const [label, target, primary] of moves) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (primary) b.className = "accept";
+    b.addEventListener("click", async e => {
+      e.stopPropagation();
+      try { await api("/api/tickets/" + t.id, { status: target }); }
+      catch (err) { if (!err.needsLogin) showError(err.message); }
+      refresh();
+    });
+    row.appendChild(b);
+  }
+  return row;
+}
+
+// WB-45: status change without dragging — the only way that works on a phone.
+function moveControl(t) {
+  const sel = document.createElement("select");
+  sel.className = "card-move";
+  const head = document.createElement("option");
+  head.value = ""; head.textContent = "→ verschieben nach …";
+  sel.appendChild(head);
+  for (const [key, label] of COLUMNS) {
+    if (key === t.status) continue;
+    const o = document.createElement("option");
+    o.value = key; o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("click", e => e.stopPropagation());   // not the card
+  sel.addEventListener("change", async e => {
+    e.stopPropagation();
+    const target = sel.value;
+    sel.value = "";
+    if (!target) return;
+    try { await api("/api/tickets/" + t.id, { status: target }); }
+    catch (err) { if (!err.needsLogin) showError(err.message); }
+    refresh();
+  });
+  return sel;
 }
 
 function splitBody(body) {
@@ -611,6 +994,7 @@ function openCreate() {
   // Active project filter wins over the default (WB-28).
   fillProjectSelect(document.getElementById("createProject"),
                     projectFilter || config.default_project);
+  syncGateRow(document.getElementById("createForm"));
   dlg.showModal();
 }
 
@@ -704,10 +1088,52 @@ document.getElementById("projectForm").addEventListener("submit", async e => {
   } catch (err) { showError(err.message); }
 });
 
+// A check can only be picked from what config.json offers for that project:
+// the board never transmits a command, only a name (see server.public_config).
+function gateNames(project) {
+  return ((config.gates || {})[project || config.default_project] || []);
+}
+
+function syncGateRow(form) {
+  const row = form.querySelector(".gate-row");
+  if (!row) return;
+  const sel = row.querySelector("select[name=gate]");
+  const wanted = (form.assignee.value || "").trim().toLowerCase() === "opencode";
+  row.hidden = !wanted;
+  if (!wanted) return;
+  const project = form.project ? form.project.value : "";
+  const names = gateNames(project);
+  const keep = sel.dataset.wanted || sel.value;
+  sel.innerHTML = "";
+  if (!names.length) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "\u2014 f\u00fcr dieses Projekt ist keine Pr\u00fcfung hinterlegt \u2014";
+    sel.append(o);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const name of names) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    sel.append(o);
+  }
+  if (names.includes(keep)) sel.value = keep;
+  sel.dataset.wanted = "";
+}
+
+for (const id of ["createForm", "detailForm"]) {
+  const form = document.getElementById(id);
+  if (!form) continue;
+  form.assignee.addEventListener("input", () => syncGateRow(form));
+  if (form.project) form.project.addEventListener("change", () => syncGateRow(form));
+}
+
 document.getElementById("createForm").addEventListener("submit", async () => {
   const formEl = document.getElementById("createForm");
   const body = Object.fromEntries(new FormData(formEl).entries());
   body.fork = formEl.fork.checked ? "ja" : "nein";
+  if (!body.gate) delete body.gate;
   try {
     await api("/api/tickets", body);
     refresh();
@@ -724,6 +1150,8 @@ function openDetail(t) {
   form.description.value = parts.description;
   form.type.value = t.type || "aufgabe";
   form.assignee.value = t.assignee;
+  form.querySelector("select[name=gate]").dataset.wanted = t.gate || "";
+  syncGateRow(form);
   form.priority.value = t.priority;
   fillProjectSelect(document.getElementById("detailProject"), t.project);
   form.nach.value = t.nach || "";
@@ -752,6 +1180,8 @@ document.getElementById("detailForm").addEventListener("submit", async () => {
       priority: form.priority.value, project: form.project.value,
       nach: form.nach.value, nicht_mit: form.nicht_mit.value,
       fork: form.fork.checked ? "ja" : "nein", body,
+      gate: form.querySelector("select[name=gate]").disabled
+        ? "" : form.querySelector("select[name=gate]").value,
       version: detailTicket.version,
     });
     refresh();
@@ -769,6 +1199,28 @@ async function deleteTicket() {
     refresh();
   } catch (e) { showError(e.message); }
 }
+
+let bugTicket = null;
+function openBug(t) {
+  bugTicket = t;
+  document.getElementById("bugTitle").textContent = "Bug zu " + t.id + " melden";
+  document.getElementById("bugForm").reset();
+  document.getElementById("bug").showModal();
+}
+
+document.getElementById("bugForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = document.getElementById("bugForm");
+  const text = form.description.value.trim();
+  if (!text) { showError("Bitte kurz beschreiben, was nicht stimmt."); return; }
+  try {
+    const bug = await api("/api/tickets/" + bugTicket.id + "/bug",
+                          { description: text });
+    document.getElementById("bug").close();
+    showError("Bug-Ticket " + bug.id + " angelegt (in Offen).");
+    refresh();
+  } catch (err) { if (!err.needsLogin) showError(err.message); }
+});
 
 let rejectTicket = null;
 function openReject(t) {
@@ -792,6 +1244,19 @@ document.getElementById("rejectForm").addEventListener("submit", async e => {
               { status: "offen", body, version: rejectTicket.version });
     refresh();
   } catch (err) { showError(err.message); refresh(); }
+});
+
+installSwipe();
+// Pfeiltasten am Rechner tun dasselbe, wenn die Handy-Ansicht aktiv ist.
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea, select")) return;
+  if (e.key === "ArrowRight") shiftStatus(1);
+  if (e.key === "ArrowLeft") shiftStatus(-1);
+});
+
+let wasPhone = isPhone();
+window.addEventListener("resize", () => {
+  if (isPhone() !== wasPhone) { wasPhone = isPhone(); render(); }
 });
 
 refresh();

@@ -15,14 +15,20 @@ title: Fix the frobnicator
 type: aufgabe
 status: offen
 assignee: claude
-project: ~/code/werkbank
+project: /home/USER/code/agent_ticket
 priority: hoch
 nach:
 nicht_mit:
 fork: nein
+gate:
+review:
 version: 1
 session:
 handover:
+handover_at:
+handover_expired:
+limit_until:
+pid:
 created: 2026-08-14
 updated: 2026-08-14
 ---
@@ -408,3 +414,45 @@ class AtomicWriteTest(unittest.TestCase):
             self.assertEqual(errors, [])
         finally:
             shutil.rmtree(d)
+
+
+class BugForTicketTest(unittest.TestCase):
+    """WB-71: reporting a bug from a finished ticket must carry that ticket's
+    context, so the agent fixing it does not start from zero."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.orig = store.create_ticket(self.dir, title="Dunkles Design",
+                                        description="Board soll dunkel sein.",
+                                        project="/projekt")
+        store.set_result(self.dir, self.orig.id,
+                         "Erledigt: Dunkles Design ist Standard, Umschalter oben.")
+        store.update_ticket(self.dir, self.orig.id, {"status": "erledigt"})
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_bug_references_the_original_and_its_result(self):
+        bug = store.create_bug_for(self.dir, self.orig.id,
+                                   "Der Umschalter springt beim Neuladen zurück.")
+        self.assertEqual(bug.type, "bug")
+        self.assertEqual(bug.project, "/projekt")
+        self.assertIn(self.orig.id, bug.title)
+        self.assertIn("Der Umschalter springt", bug.body)
+        self.assertIn(self.orig.title, bug.body)
+        self.assertIn("Umschalter oben", bug.body)      # the original's result
+        self.assertEqual(bug.status, "offen")
+
+    def test_original_keeps_its_state(self):
+        before = {x.id: x for x in store.load_tickets(self.dir)}[self.orig.id]
+        store.create_bug_for(self.dir, self.orig.id, "kaputt")
+        after = {x.id: x for x in store.load_tickets(self.dir)}[self.orig.id]
+        self.assertEqual(after.status, before.status)
+
+    def test_empty_description_refused(self):
+        with self.assertRaises(ValueError):
+            store.create_bug_for(self.dir, self.orig.id, "   ")
+
+    def test_unknown_ticket_refused(self):
+        with self.assertRaises(KeyError):
+            store.create_bug_for(self.dir, "WB-999", "kaputt")

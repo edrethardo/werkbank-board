@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Werkbank — Bilder hochladen</title>
+<style>
+  :root { --bg:#1d2125; --card:#2c333a; --text:#b6c2cf; --muted:#8c9bab;
+          --accent:#579dff; --border:#3d444c; --bad:#f87462; --good:#7ee2b8; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg);
+         color:var(--text); padding:1rem; max-width:34rem; margin:0 auto; }
+  h1 { font-size:1.15rem; margin-bottom:.3rem; }
+  p.hint { color:var(--muted); font-size:.85rem; margin-bottom:1.2rem; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px;
+          padding:1rem; margin-bottom:1rem; }
+  input[type=file] { width:100%; font-size:16px; color:var(--text); }
+  input[type=password] { width:100%; font-size:16px; padding:.6rem; border-radius:6px;
+          border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  button { width:100%; margin-top:.8rem; padding:.9rem; font-size:1rem; border:0;
+           border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  ul { list-style:none; padding:0; font-size:.9rem; }
+  li { padding:.45rem 0; border-bottom:1px solid var(--border); }
+  li:last-child { border-bottom:0; }
+  .ok { color:var(--good); } .bad { color:var(--bad); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<h1>🛠️ Bilder hochladen</h1>
+<p class="hint">Landet in <code>docs/images/</code> der Werkbank. Nur Bilder,
+maximal 15 MB pro Datei.</p>
+
+<div class="card" id="loginCard" style="display:none">
+  <label for="pw">Passwort</label>
+  <input id="pw" type="password" autocomplete="current-password">
+  <button onclick="login()">Anmelden</button>
+</div>
+
+<div class="card" id="uploadCard">
+  <input id="files" type="file" accept="image/*" multiple>
+  <button id="go" onclick="upload()">Hochladen</button>
+  <p id="status" class="hint" style="margin:.8rem 0 0"></p>
+</div>
+
+<div class="card">
+  <strong>Bereits hochgeladen</strong>
+  <ul id="list"><li class="hint">wird geladen …</li></ul>
+</div>
+
+<p class="hint"><a href="/">← zum Board</a></p>
+
+<script>
+const el = id => document.getElementById(id);
+function say(msg, cls) { el("status").textContent = msg; el("status").className = "hint " + (cls || ""); }
+
+async function api(path, body) {
+  const res = await fetch(path, body
+    ? { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body) }
+    : undefined);
+  const data = await res.json();
+  if (res.status === 401) { el("loginCard").style.display = "block"; throw new Error("Bitte anmelden"); }
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function login() {
+  try {
+    await api("/api/login", { password: el("pw").value });
+    el("loginCard").style.display = "none";
+    el("pw").value = "";
+    refresh();
+  } catch (e) { say(e.message, "bad"); }
+}
+
+async function refresh() {
+  try {
+    const data = await api("/api/uploads");
+    const list = el("list");
+    list.innerHTML = "";
+    if (!data.files.length) {
+      const li = document.createElement("li");
+      li.className = "hint"; li.textContent = "(noch nichts)";
+      list.appendChild(li);
+      return;
+    }
+    for (const f of data.files) {
+      const li = document.createElement("li");
+      li.textContent = "🖼️ " + f;
+      list.appendChild(li);
+    }
+  } catch (e) { /* login card is shown by api() */ }
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error("Datei konnte nicht gelesen werden"));
+    r.readAsDataURL(file);
+  });
+}
+
+async function upload() {
+  const files = Array.from(el("files").files || []);
+  if (!files.length) { say("Erst ein Bild auswählen.", "bad"); return; }
+  el("go").disabled = true;
+  let done = 0;
+  for (const file of files) {
+    try {
+      say(`Lade ${file.name} … (${done + 1}/${files.length})`);
+      const data = await readFile(file);
+      const res = await api("/api/upload", { name: file.name, data });
+      done++;
+      say(`${done}/${files.length} hochgeladen — zuletzt: ${res.saved}`, "ok");
+    } catch (e) { say(`${file.name}: ${e.message}`, "bad"); }
+  }
+  el("go").disabled = false;
+  el("files").value = "";
+  refresh();
+}
+
+refresh();
+</script>
+</body>
+</html>

@@ -48,9 +48,16 @@ TYPES = ["aufgabe", "bug"]
 # may lack `type`, `nach` or `nicht_mit`; parsing falls back to the dataclass
 # defaults. `nach`/`nicht_mit` are comma lists of ticket ids (WB-12).
 KEYS = ["id", "title", "type", "status", "assignee", "project", "priority",
-        "nach", "nicht_mit", "fork", "version", "session", "handover",
+        "nach", "nicht_mit", "fork", "gate", "review", "version", "session",
+        "handover", "handover_at", "handover_expired", "limit_until", "pid",
         "created", "updated"]
 FORK_VALUES = ["ja", "nein"]
+# A gate NAME, never a command: no shell metacharacters can survive this.
+GATE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
+
+
+def is_gate_name(value) -> bool:
+    return isinstance(value, str) and (value == "" or bool(GATE_NAME_RE.fullmatch(value)))
 
 
 @dataclass
@@ -65,9 +72,15 @@ class Ticket:
     nach: str = ""        # must run after these tickets are erledigt
     nicht_mit: str = ""   # must not be worked at the same time as these
     fork: str = "nein"    # ja = agent works on a fork of the ticket session
+    gate: str = ""        # shell command that decides "fertig" — NEVER settable via the API
+    review: str = ""      # "nein" skips the paid diff review after a green gate
     version: str = "1"    # write counter for lost-update detection (WB-9)
     session: str = ""     # session id of the run that worked this ticket (WB-20)
     handover: str = ""    # session id a dragged ticket was handed to (WB-22)
+    handover_at: str = "" # unix time the handover was set — survives restarts (WB-66)
+    handover_expired: str = ""  # "ja" once a handover went unclaimed (WB-68)
+    limit_until: str = ""       # unix time the run pauses on quota (WB-69)
+    pid: str = ""               # OS pid of the live claude process — kills orphans (WB-75)
     created: str = ""
     updated: str = ""
     body: str = ""
@@ -214,16 +227,23 @@ def load_tickets(tickets_dir) -> list:
 
 
 def _find_path(tickets_dir, ticket_id: str) -> Path:
-    for p in _paths(tickets_dir):
-        if p.name.startswith(ticket_id + "-") or p.stem == ticket_id:
-            return p
+    matches = [p for p in _paths(tickets_dir)
+               if p.name.startswith(ticket_id + "-") or p.stem == ticket_id]
+    if len(matches) > 1:
+        # WB-101: a duplicate id once let updates land on the wrong ticket
+        # (first match by filename). Failing loudly beats silent misdirection.
+        raise ValueError(
+            f"Ticket-Nummer {ticket_id} ist mehrfach vergeben "
+            f"({', '.join(p.name for p in matches)}) — bitte zuerst umnummerieren.")
+    if matches:
+        return matches[0]
     raise KeyError(f"no ticket {ticket_id}")
 
 
 def create_ticket(tickets_dir, title: str, description: str, assignee: str = "claude",
                   project: str = "", priority: str = "normal",
                   type: str = "aufgabe", nach: str = "", nicht_mit: str = "",
-                  fork: str = "nein") -> Ticket:
+                  fork: str = "nein", gate: str = "") -> Ticket:
     tickets_dir = Path(tickets_dir)
     tickets_dir.mkdir(parents=True, exist_ok=True)
     if priority not in PRIORITIES:
@@ -233,23 +253,39 @@ def create_ticket(tickets_dir, title: str, description: str, assignee: str = "cl
     nach, nicht_mit = normalize_links(nach), normalize_links(nicht_mit)
     if fork not in FORK_VALUES:
         raise ValueError(f"fork must be one of {FORK_VALUES}")
+    if not is_gate_name(gate):
+        raise ValueError("gate must be a plain check name")
     with _locked(tickets_dir):
         return _create_locked(tickets_dir, title, description, assignee, project,
-                              priority, type, nach, nicht_mit, fork)
+                              priority, type, nach, nicht_mit, fork, gate)
+
+
+def _read_highest_counter(tickets_dir) -> int:
+    """tickets/.highest-id remembers the highest number EVER assigned, so a
+    deleted ticket's number is never reissued (WB-101 — old logs and journal
+    entries keep pointing at the number they meant). The file is committed on
+    purpose: two checkouts allocating in parallel then produce a visible merge
+    conflict instead of two tickets silently sharing an id."""
+    try:
+        return int((Path(tickets_dir) / ".highest-id").read_text().strip())
+    except (OSError, ValueError):
+        return 0
 
 
 def _create_locked(tickets_dir, title, description, assignee, project, priority,
-                   type, nach, nicht_mit, fork) -> Ticket:
+                   type, nach, nicht_mit, fork, gate="") -> Ticket:
     nums = [_ticket_number(parse_ticket(p.read_text(encoding="utf-8")).id)
             for p in _paths(tickets_dir)]
+    next_num = max(max(nums, default=0), _read_highest_counter(tickets_dir)) + 1
     today = date.today().isoformat()
     t = Ticket(
-        id=f"WB-{max(nums, default=0) + 1}",
+        id=f"WB-{next_num}",
         title=title.strip(),
         type=type,
         nach=nach,
         nicht_mit=nicht_mit,
         fork=fork,
+        gate=gate,
         assignee=assignee.strip() or "claude",
         project=project,
         priority=priority,
@@ -259,7 +295,35 @@ def _create_locked(tickets_dir, title, description, assignee, project, priority,
     )
     path = tickets_dir / f"{t.id}-{_slug(t.title)}.md"
     _write_ticket_file(path, serialize_ticket(t))
+    (Path(tickets_dir) / ".highest-id").write_text(f"{next_num}\n", encoding="utf-8")
     return t
+
+
+def create_bug_for(tickets_dir, ticket_id: str, description: str) -> Ticket:
+    """Report a bug against an existing ticket (WB-71).
+
+    The new ticket carries the original's title, description and result, so the
+    agent that picks it up sees what was built and what was claimed about it —
+    that context is the whole point of reporting the bug from the card."""
+    description = (description or "").strip()
+    if not description:
+        raise ValueError("Bitte beschreiben, was nicht stimmt.")
+    with _locked(tickets_dir):
+        path = _find_path(tickets_dir, ticket_id)
+        orig = parse_ticket(path.read_text(encoding="utf-8"))
+        m = re.match(r"## Beschreibung\n+([\s\S]*?)\n*## Ergebnis\n+([\s\S]*)",
+                     orig.body)
+        orig_desc = (m.group(1).strip() if m else orig.body.strip())
+        orig_result = (m.group(2).strip() if m else "")
+        body = (
+            f"**Was nicht stimmt:** {description}\n\n"
+            f"**Betrifft:** {orig.id} — {orig.title}\n\n"
+            f"**Ursprüngliche Aufgabe:**\n{orig_desc}\n\n"
+            f"**Was der Agent damals berichtet hat:**\n{orig_result or '(kein Ergebnis)'}"
+        )
+        return _create_locked(tickets_dir, f"Bug zu {orig.id}: {orig.title}"[:70],
+                              body, "claude", orig.project, "normal", "bug",
+                              "", "", "nein")
 
 
 def delete_ticket(tickets_dir, ticket_id: str) -> None:
@@ -305,8 +369,14 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
         raise ConflictError(
             "Nicht gespeichert: Das Ticket wurde inzwischen geändert "
             "(z. B. vom Agenten). Bitte kurz prüfen und erneut speichern.")
+    # `gate` holds the NAME of a check, never a command: the command behind
+    # the name lives in config.json, which no request can touch. That is what
+    # makes it settable from the board at all — a settable COMMAND on a
+    # LAN-reachable board would be remote code execution.
     allowed = {"title", "type", "status", "assignee", "project", "priority",
-               "nach", "nicht_mit", "fork", "session", "handover", "body"}
+               "nach", "nicht_mit", "fork", "gate", "review", "session",
+               "handover", "handover_at", "handover_expired", "limit_until",
+               "pid", "body"}
     unknown = set(changes) - allowed
     if unknown:
         raise ValueError(f"cannot update keys: {sorted(unknown)}")
@@ -321,6 +391,14 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
         raise ValueError(f"type must be one of {TYPES}")
     if "fork" in changes and changes["fork"] not in FORK_VALUES:
         raise ValueError(f"fork must be one of {FORK_VALUES}")
+    if "review" in changes and changes["review"] not in ("", "ja", "nein"):
+        raise ValueError("review must be '', 'ja' or 'nein'")
+    if "gate" in changes and not is_gate_name(changes["gate"]):
+        # Belt and braces: even though the name is only ever looked up in
+        # config.json, a value that cannot be a shell fragment keeps it that
+        # way if a future caller ever forgets the lookup.
+        raise ValueError("gate must be a plain check name (letters, digits, "
+                         "space, . _ -), max 40 characters")
     for k, v in changes.items():
         setattr(t, k, v)
     t.version = str(int(t.version or "1") + 1)

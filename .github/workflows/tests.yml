@@ -1,0 +1,29 @@
+# WB-56: run the unittest suite on both Linux and Windows on every push and
+# pull request. Windows is the point of this workflow — the maintainer has no
+# Windows machine, so this is where the "should work on Windows" claim in the
+# README either becomes true or gets exposed.
+#
+# `-v` matters: several tests skip themselves on Windows (e.g. dispatch tests
+# that use POSIX shell scripts as claude stand-ins) and we want that visible in
+# the log, not silently green.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unittest:
+    strategy:
+      fail-fast: false  # a Windows failure must not hide a Linux failure
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Run unittest suite (verbose, so skipped tests are visible)
+        run: python -m unittest discover -s tests -v

@@ -134,3 +134,156 @@ class BrowseContainmentTest(unittest.TestCase):
         from werkbank import projects
         r = projects.list_dirs(str(self.home / "innen"), roots=[self.home])
         self.assertEqual(r["path"], str(self.home / "innen"))
+
+
+class DefaultProjectGuardTest(unittest.TestCase):
+    """WB-48: an unconfigured board must not aim a Bash-enabled agent at its
+    own repository — but deliberately targeting it stays allowed."""
+
+    def setUp(self):
+        from werkbank import setup
+        self.setup = setup
+        self.repo = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.repo)
+
+    def test_missing_config_file_warns(self):
+        msg = self.setup.config_warning({"default_project": str(self.repo)},
+                                        config_exists=False, repo_root=self.repo)
+        self.assertIsNotNone(msg)
+        self.assertIn("config.json", msg)
+
+    def test_placeholder_warns(self):
+        msg = self.setup.config_warning({"default_project": "/pfad/zu/deinem/projekt"},
+                                        config_exists=True, repo_root=self.repo)
+        self.assertIsNotNone(msg)
+
+    def test_empty_or_missing_value_warns(self):
+        for cfg in ({"default_project": ""}, {}):
+            self.assertIsNotNone(self.setup.config_warning(
+                cfg, config_exists=True, repo_root=self.repo))
+
+    def test_deliberate_choice_is_silent(self):
+        # The Werkbank working on itself is legitimate — it is how this tool
+        # was built. Only the UNCONFIGURED fallback is dangerous.
+        self.assertIsNone(self.setup.config_warning(
+            {"default_project": str(self.repo)}, config_exists=True,
+            repo_root=self.repo))
+        self.assertIsNone(self.setup.config_warning(
+            {"default_project": "/anderes/projekt"}, config_exists=True,
+            repo_root=self.repo))
+
+    def test_unconfigured_board_refuses_to_dispatch_at_itself(self):
+        from werkbank import dispatch
+        tickets = self.repo / "tickets"
+        t = store.create_ticket(tickets, title="Gefährlich", description="",
+                                project=str(self.repo))
+        store.update_ticket(tickets, t.id, {"status": "in_arbeit"})
+        started = []
+        d = dispatch.Dispatcher(tickets, cfg={"default_project": str(self.repo),
+                                              "repo_root": str(self.repo),
+                                              "config_exists": False,
+                                              "state_path": str(self.repo / "s.json")},
+                                runner=lambda tk, on_start=None, on_event=None:
+                                    (started.append(tk.id), ("x", None))[1])
+        d.dispatch(t.id)
+        d.join(timeout=5)
+        after = {x.id: x for x in store.load_tickets(tickets)}[t.id]
+        self.assertEqual(started, [])                     # never ran
+        self.assertEqual(after.status, "fehlgeschlagen")
+        self.assertIn("config.json", after.body)
+
+
+class SkillPathTest(unittest.TestCase):
+    """WB-47: a path inside a Python string must never contain `~` — the shell
+    expands it, Python never does. This shipped broken once."""
+
+    def _skill_files(self):
+        root = Path(__file__).resolve().parent.parent
+        return list(root.glob(".claude/skills/**/SKILL.md"))
+
+    def test_no_tilde_paths_inside_quotes(self):
+        import re
+        offenders = []
+        for p in self._skill_files():
+            for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                if re.search(r"""['"]~[/\w]""", line):
+                    offenders.append(f"{p.name}:{n}: {line.strip()[:70]}")
+        self.assertEqual(offenders, [], "Tilde in einer Zeichenkette gefunden")
+
+    def test_werkbank_path_appears_once_per_command_block(self):
+        # The path lives in a shell assignment, never in Python source.
+        for name in ("werkbank-pull-ticket", "werkbank-report-bug"):
+            p = [f for f in self._skill_files() if f.parent.name == name]
+            if not p:
+                continue
+            text = p[0].read_text(encoding="utf-8")
+            self.assertIn("WERKBANK=", text)
+            self.assertNotIn('sys.path.insert(0, "/', text)   # no hardcoded path
+            self.assertIn('os.environ["WERKBANK"]', text)
+
+
+class FriendlyStartupTest(unittest.TestCase):
+    """WB-49: the two failures every first-time user hits must read like German
+    sentences, not like a Python traceback."""
+
+    def setUp(self):
+        from werkbank import setup
+        self.setup = setup
+
+    def test_port_in_use_message_names_the_board(self):
+        msg = self.setup.port_busy_message(8765)
+        self.assertIn("8765", msg)
+        self.assertIn("http://127.0.0.1:8765", msg)
+        self.assertIn("läuft", msg.lower())
+        self.assertNotIn("Traceback", msg)
+
+    def test_missing_claude_is_a_warning_not_a_stop(self):
+        warn = self.setup.claude_warning(lambda name: None)
+        self.assertIsNotNone(warn)
+        self.assertIn("claude", warn.lower())
+        self.assertIsNone(self.setup.claude_warning(lambda name: "/usr/bin/claude"))
+
+    def test_service_unit_is_unbuffered(self):
+        unit = Path.home() / ".config/systemd/user/werkbank-board.service"
+        if not unit.exists():
+            self.skipTest("kein systemd-Dienst auf dieser Maschine")
+        self.assertIn("PYTHONUNBUFFERED=1", unit.read_text())
+
+
+class ExposureRefusedAtTheBoundaryTest(unittest.TestCase):
+    """Found by an adversarial review before the 1.0.0 release: the rule "no
+    network access without a password" was enforced only in the CLI helper
+    (`setup.set_lan`), not where the socket is opened. Hand-editing config.json
+    — the obvious thing to try, the field is literally called `lan` — produced a
+    board bound to 0.0.0.0 with `auth_required()` False: no login, whole
+    network, on a tool whose tickets run shell commands. The README meanwhile
+    promised that editing `host` by hand does not open the network path.
+    """
+
+    def setUp(self):
+        from werkbank import server
+        self.server = server
+
+    def test_lan_without_a_password_refuses_to_start(self):
+        why = self.server.exposure_refusal("0.0.0.0", True, "")
+        self.assertIsNotNone(why)
+        self.assertIn("Passwort", why)
+
+    def test_hand_edited_host_without_lan_mode_refuses_to_start(self):
+        why = self.server.exposure_refusal("0.0.0.0", False, "")
+        self.assertIsNotNone(why)
+        self.assertIn("host", why)
+
+    def test_a_password_and_lan_mode_together_are_allowed(self):
+        self.assertIsNone(self.server.exposure_refusal("0.0.0.0", True, "pbkdf2$x$y"))
+
+    def test_localhost_is_always_fine(self):
+        for host in ("127.0.0.1", "localhost", "::1", ""):
+            with self.subTest(host=host):
+                self.assertIsNone(self.server.exposure_refusal(host, False, ""))
+
+    def test_a_bound_lan_ip_without_a_password_also_refuses(self):
+        """Not just 0.0.0.0 — any non-local address is exposure."""
+        self.assertIsNotNone(self.server.exposure_refusal("10.77.0.50", True, ""))

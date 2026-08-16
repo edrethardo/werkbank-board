@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(./**)",
+      "Read(~/.claude/**)",
+      "Glob",
+      "Grep",
+      "Edit(./**)",
+      "Write(./**)",
+      "Bash(ls:*)",
+      "Bash(pwd)",
+      "Bash(mkdir:*)",
+      "Bash(uname:*)",
+      "Bash(git --version)",
+      "Bash(git config user.name:*)",
+      "Bash(git config user.email:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git switch -c:*)",
+      "Bash(git merge:*)",
+      "Bash(git init:*)"
+    ],
+    "ask": [
+      "Edit(~/.claude/skills/**)",
+      "Write(~/.claude/skills/**)",
+      "Edit(~/.claude/CLAUDE.md)",
+      "Write(~/.claude/CLAUDE.md)",
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(git reset:*)",
+      "Bash(git restore:*)",
+      "Bash(git clean:*)",
+      "Bash(git checkout --:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git push:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Edit(.claude/settings*.json)",
+      "Write(.claude/settings*.json)",
+      "Edit(.git/**)",
+      "Write(.git/**)"
+    ]
+  }
+}

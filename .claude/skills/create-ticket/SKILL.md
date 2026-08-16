@@ -1,7 +1,7 @@
 ---
 name: create-ticket
 description: Use when the user asks to create a ticket in chat — "erstelle ein Ticket", "leg ein Ticket an", "schreib das als Ticket auf", "mach daraus ein Ticket", "das sollten wir als Ticket festhalten".
-version: 3
+version: 4
 ---
 
 # Create a Ticket from Chat
@@ -9,6 +9,12 @@ version: 3
 Turn what the user just described into a correctly formatted ticket on the board.
 ALWAYS go through `store.create_ticket` — never write a ticket file by hand; the
 store owns id numbering, filename slugs, and the file format.
+
+NEVER create a ticket from an isolated copy of this repo (git worktree, review
+clone, scratch checkout): its `tickets/` is frozen at fork time, so it assigns a
+number the live board may already have given away — that is exactly how two
+tickets ended up sharing WB-93 (WB-101). File tickets in the LIVE board repo, or
+hand the request to the session that owns it.
 
 ## 1. Gather the fields — ask only for what's missing
 

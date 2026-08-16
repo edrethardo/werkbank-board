@@ -1,14 +1,22 @@
 ---
 name: werkbank-report-bug
 description: Use when the user reports a bug in any session — "ich hab einen bug gefunden", "da ist ein Fehler", "das ist kaputt", wrong behavior described — capture it properly and file a bug ticket on the Werkbank board.
-version: 2
+version: 3
 ---
 
 # Werkbank: Report a Bug
 
-The Werkbank repo lives at `~/code/werkbank` (verify the path exists
-first; the repo may have moved). Reporting and fixing are separate: this skill only
-FILES the bug. Do not start fixing unless the user explicitly asks.
+## Path to the Werkbank — the ONLY line you adapt
+
+    WERKBANK=/home/USER/code/agent_ticket
+
+Every command below starts with that assignment. Never write the path into a
+Python string: `~` is expanded by the SHELL, never by Python (WB-47).
+Check it first: `ls "$WERKBANK/tickets" >/dev/null` — if that fails, say so and
+stop.
+
+Reporting and fixing are separate: this skill only FILES the bug. Do not start
+fixing unless the user explicitly asks.
 
 ## 1. Capture the bug — three questions
 
@@ -30,22 +38,22 @@ Say which one you chose and why; let the user override.
 
 ## 3. File the ticket
 
-Create it through the Werkbank's own store (guarantees ID numbering and format —
-never write the ticket file by hand). Project = THIS session's working directory
-unless the user names another. Description structure:
+Values travel through the ENVIRONMENT — a quote in the user's text must never
+end up inside the Python source (WB-35):
 
-    # Values travel through the ENVIRONMENT: a quote in the user's bug text
-    # would otherwise break out of the Python literal (WB-35 review).
-    WB_TITLE="<short bug title>" WB_PRIO="<hoch|normal|niedrig>" \
-    WB_PROJECT="<absolute path of this session's project>" \
-    WB_DESC="**Was passiert:** ...
+    WERKBANK=/home/USER/code/agent_ticket \
+    WB_TITLE="<kurzer Bug-Titel>" \
+    WB_PRIO="<hoch|normal|niedrig>" \
+    WB_PROJECT="$PWD" \
+    WB_DESC="**Was passiert:** …
 
-    **Erwartet:** ...
+    **Erwartet:** …
 
-    **Nachstellen:** 1. ... 2. ..." python3 - <<'EOF'
-    import os, sys; sys.path.insert(0, "~/code/werkbank/src")
+    **Nachstellen:** 1. … 2. …" python3 - <<'EOF'
+    import os, sys
+    sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
     from werkbank import store
-    t = store.create_ticket("~/code/werkbank/tickets",
+    t = store.create_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
                             title=os.environ["WB_TITLE"],
                             description=os.environ["WB_DESC"],
                             project=os.environ["WB_PROJECT"],
@@ -53,13 +61,33 @@ unless the user names another. Description structure:
     print(t.id)
     EOF
 
+## 3b. Name a check, or the bug is Claude-only
+
+A bug ticket can only go to the local model (`assignee: opencode`) if it names a
+check that FAILS now and must pass afterwards:
+
+    gate: Tests laufen durch
+
+**That field takes a NAME, never a command.** The commands live in the board's
+`config.json` under `gates` -> `<project path>`; only names configured there can
+be used, and the board refuses to dispatch an opencode ticket whose name it does
+not know. (A ticket field that carried a command would be remote code execution
+on a LAN-reachable board.)
+
+So: look in `config.json` for what this project offers. If one of those checks
+demonstrates the bug, name it. If none does, leave the ticket with Claude and say
+why in the description — a bug with no reproducible check must not go to a model
+whose self-report we do not trust. If a suitable check EXISTS but is not
+configured, say that too; the owner can have it added.
+
+Prefer a check that RUNS the behaviour over one that merely compiles it: a
+type-check passes happily while every test fails.
+
 ## 4. Commit and confirm
 
-Commit the new ticket file in the Werkbank repo (do not push):
-
-    git -C ~/code/werkbank add tickets/
-    git -C ~/code/werkbank commit -m "Report bug: <id> <title>"
+    git -C "$WERKBANK" add tickets/
+    git -C "$WERKBANK" commit -m "Report bug: <id> <title>"
 
 Then tell the user the ticket ID and that it now sits in **Offen** on the board —
-they can drag it to In Arbeit or say „arbeite die Tickets ab" whenever they want it
-fixed.
+they can drag it to In Arbeit or say „arbeite die Tickets ab" whenever they want
+it fixed.

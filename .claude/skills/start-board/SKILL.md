@@ -35,10 +35,15 @@ crashes (`Restart=always`), and binds to the host in `config.json`
 
 ## Network exposure — user decision only
 
-`host: 127.0.0.1` means only this machine. NEVER switch to `0.0.0.0` (LAN)
-without the user's explicit, informed decision: the board has no login, and
-anyone on the network could read/change tickets, browse folder names, and
-START AGENT RUNS that execute commands on this machine. Spell that out first.
+`host: 127.0.0.1` means only this machine. Never open it to the network
+without the user's explicit, informed decision: anyone who reaches the board
+can read and change tickets, browse folder names, and START AGENT RUNS that
+execute commands on this machine. Spell that out first.
+
+Do NOT hand-edit `host`/`lan` in `config.json`. The supported path is
+`python3 src/werkbank/server.py --set-password` and then `--lan-on`; the board
+REFUSES TO START on a network address without a password, so a hand-edit does
+not silently expose anything — it just breaks the board's start.
 
 ## Fallback without systemd (unit missing/broken)
 

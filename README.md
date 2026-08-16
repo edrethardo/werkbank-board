@@ -8,35 +8,72 @@ agent picks it up, works it in the target project, and reports back into the
 ticket for your review. If the remembered worker is a live chat conversation, the
 ticket is handed over there and worked **visibly in front of you**.
 
+> ⚠️ **A ticket is an executable prompt.** Moving one to *In Arbeit* runs
+> `claude -p` in your project with `Bash` pre-approved — anyone who can create
+> and drag a ticket can run commands as you. Localhost-only by default; read
+> the [Security](#security) section before you expose the board or hand it to
+> anyone else.
+
+**Quick start** (needs Python 3.10+, a logged-in `claude`, ~5 minutes):
+
+```bash
+git clone https://github.com/edrethardo/werkbank-board.git werkbank
+cd werkbank && cp config.example.json config.json  # edit default_project
+python3 src/werkbank/server.py                     # then open http://127.0.0.1:8765
+```
+
+The UI is in German — all buttons, dialogs and error messages, `<html
+lang="de">`. Docs and the changelog are German too; code, commits and
+developer docs are English. Details in [Language](#language) below.
+
+<p align="center">
+  <img src="docs/images/board-handy.png" alt="Das Board auf dem Handy: Statusreiter, Ticketkarten mit Starten- und Warteschlangen-Knopf" width="330">
+  <br>
+  <em>Das Board auf dem Handy — Status antippen, Ticket starten, fertig.
+  Am Rechner sind es sechs Spalten zum Ziehen.</em>
+</p>
+
 ## What it does
 
-- **Kanban board** (vanilla JS, single HTML page): Offen → Zu bearbeiten →
-  In Arbeit → Review → Fehlgeschlagen → Erledigt, drag & drop, dark/light
-  theme, project filter, delete, resizable dialogs.
-- **A queue that runs itself**: park tickets in *Zu bearbeiten* and the board
-  starts them one after another; a pending review holds the project's queue
-  unless you switch that off per project.
-- **Live agent status**: running cards show steps, last tool, tokens and the
-  CLI's own quota reporting, flag a silent run, and name failures in plain
-  language ("usage limit reached") instead of error codes; the run log is
-  written while the agent works.
-- **Tickets are plain markdown files** in `tickets/` — the files are the source
-  of truth, every change is committed to git, nothing hides in a database.
-- **Drag to dispatch**: moving a ticket to In Arbeit spawns a headless
-  `claude -p` run that resumes the project's remembered *ticket session*
-  (per-project lineage, forked when the lineage is an open conversation), or
-  hands the ticket to the live chat session for visible work.
-- **Review loop**: agents stop at Review with an honest result — including
-  failures; only the human moves tickets to Erledigt. Reject with a reason and
-  the ticket goes back to Offen carrying your feedback.
-- **Robust by paranoia**: lost-update protection (version counter + file locks
-  across processes), orphan sweep after restarts, broken ticket files quarantined
-  instead of taking the board down, serialized agent runs.
-- **Multi-project**: named project list, folder picker, per-ticket target
-  project; other projects' Claude sessions pull their tickets themselves via a
-  user-level skill.
-- **Ticket links**: "must wait for" ordering and mutual exclusion, enforced at
-  start and dequeue time.
+- **Kanban board with a self-driving queue.** Six columns Offen → Zu bearbeiten
+  → In Arbeit → Review → Fehlgeschlagen → Erledigt, drag & drop; tickets
+  parked in *Zu bearbeiten* start themselves one after another. Ticket links
+  express order and mutual exclusion.
+- **Drag to dispatch.** Moving a ticket to *In Arbeit* spawns a headless
+  `claude -p` run in the ticket's target project, resuming that project's
+  remembered ticket session — or handing the ticket to your live chat, when
+  the last worker was one, for visible work in front of you.
+- **Honest runtime picture.** Running cards show steps, last tool, tokens
+  and the CLI's own quota reading; a silent run is flagged; failures land
+  in a separate *Fehlgeschlagen* column with the plain-language reason
+  ("usage limit reached"), not an error code.
+- **Tickets are plain markdown files** in `tickets/` — the files are the
+  source of truth. Git them if you want history; the server never **commits**
+  anything — only the ticket-working skills do. (The `opencode` worker does
+  run read-only `git diff` / `rev-parse` to show a reviewer what changed.)
+- **A second, local worker (optional, and it needs setup you must supply).**
+  A ticket with `assignee: opencode` is worked by a model on your own machine
+  instead of Claude, and is accepted only when a CHECK you configured passes —
+  a local model reports success over failing tests, so its own summary must
+  never be the acceptance criterion. The ticket names the check; the command
+  behind that name lives in `config.json` under `gates`, so nothing that
+  crosses the network is ever executed. No check, no dispatch.
+
+  **This path is not self-contained.** It shells out to a launcher called
+  `opencode-task` (`<project dir>` as argv[1], the task on stdin, the final
+  text on stdout, exit 4 = model endpoint unreachable) which is NOT part of
+  this repository — you provide it, wrapping whatever local agent you use. If
+  it is not on your `PATH`, such a ticket fails with a message saying exactly
+  that, and everything else on the board keeps working. See
+  [`docs/dev/opencode-gate-dispatch.md`](docs/dev/opencode-gate-dispatch.md).
+
+More on architecture, hardening, and the small-scale trade-offs behind these
+choices in [`docs/dev/board-internals.md`](docs/dev/board-internals.md).
+
+(The tool keeps a work journal under `docs/journal/` — the skills write one
+entry per session. What is in this repo is a **sample**: the entries from the
+run-up to 1.0, kept as an example of what that habit produces. It is not
+updated further; yours grows from here.)
 
 ## Getting it running
 
@@ -48,9 +85,11 @@ ticket is handed over there and worked **visibly in front of you**.
 - **Python 3.10+** (standard library only, nothing to install).
 - **Linux, macOS or Windows.** File locking uses `fcntl` on Unix and `msvcrt`
   on Windows; ticket files always use `\n` line endings, whatever the platform.
-  (Honest caveat: the Windows path is written and unit-covered, but the
-  maintainer has no Windows machine — it has not been run on real Windows.
-  Reports welcome.)
+  The unit suite now runs on both ubuntu-latest and windows-latest via
+  `.github/workflows/tests.yml` on every push; tests that need POSIX shell
+  stand-ins are skipped on Windows and visible in the log. (Honest caveat:
+  the maintainer has no Windows machine, so anything beyond what the suite
+  exercises is still unproven. Reports welcome.)
 - **git**, if you want the ticket history that this design assumes.
 
 ### 1. Get the code and configure it
@@ -66,14 +105,32 @@ your tickets are about, and list your projects under `projects` (name → path).
 You can also do this later in the board's **📁 Projekte** dialog, which has a
 folder picker. `config.json` is gitignored — it is yours, not the repo's.
 
+**Shortcut for the same setup:** open the Werkbank folder in Claude Code (see
+step 4) and type `init` — the chat asks you the same questions, writes
+`config.json` for you and offers to install the pull-ticket skill. It is
+strictly optional; both paths end in the same file.
+
 ### 2. Start the board
 
 ```bash
-python3 src/werkbank/server.py
+python3 src/werkbank/server.py               # Linux, macOS
+py -3 src\werkbank\server.py                 # Windows (or `python`)
 ```
 
 Open <http://127.0.0.1:8765>. That is the whole installation — one process, no
 database, no build step. Stop it with Ctrl-C.
+
+**Platform notes.** File locking, log paths and line endings are cross-platform
+(unit-covered, exercised by CI on Linux and Windows). Three things are
+Unix-only:
+
+- The **chat-handover watcher** in the `werkbank-pull-ticket` skill is a
+  `bash` loop — on Windows the fallback background run kicks in instead
+  after `chat_handover_minutes`.
+- The **check behind an `opencode` ticket** runs via `/bin/sh -c`, so that
+  worker cannot verify its work on Windows. Claude tickets are unaffected.
+- The **systemd** autostart in §6 is Linux-only; macOS uses `launchd`,
+  Windows uses the Startup folder (see §6).
 
 ### 3. Create a ticket and let an agent work it
 
@@ -90,6 +147,14 @@ Nothing starts by itself: only your drag (or an explicit chat request)
 dispatches an agent.
 
 ### 4. Talk to it from Claude Code (optional but this is the point)
+
+<p align="center">
+  <img src="docs/images/chat-tickets.png" alt="Claude Code zerlegt einen Plan in mehrere Werkbank-Tickets mit Abhängigkeiten" width="330">
+  <br>
+  <em>Aus einem Plan werden Tickets: der Agent legt sie selbst über die Werkbank
+  an — samt Abhängigkeiten — und arbeitet sie danach einzeln ab.</em>
+</p>
+
 
 Open the Werkbank folder in Claude Code. The repo ships project skills in
 `.claude/skills/`, so you can say things like:
@@ -108,11 +173,36 @@ cp -r .claude/skills/_user-level/werkbank-pull-ticket ~/.claude/skills/
 cp -r .claude/skills/_user-level/werkbank-report-bug  ~/.claude/skills/
 ```
 
-Then edit the repo path at the top of both `SKILL.md` files to wherever you
-cloned Werkbank. In any project session you can now say *"zieh dir dein
-Ticket"* or *"ich hab einen Bug gefunden"*.
+Each skill sets the Werkbank path in a `WERKBANK=…` line at the top of every
+command block it contains — five of them in `werkbank-pull-ticket`. Adapt
+**all** occurrences to wherever you cloned Werkbank (a find-and-replace of the
+path over the file does it); the path is never hidden inside Python code, only
+ever in that shell assignment.
+In any project session you can now say *"zieh dir dein Ticket"* or *"ich hab
+einen Bug gefunden"*.
 
-### 5. Start it automatically (optional)
+### 5. Use it from your phone (optional)
+
+The board can serve your home network, protected by a password. **Two commands:**
+
+```bash
+python3 src/werkbank/server.py --set-password   # asks twice, stores only a hash
+python3 src/werkbank/server.py --lan-on         # prints the address for your phone
+systemctl --user restart werkbank-board         # (or restart it however you run it)
+```
+
+Open the printed address (something like `http://192.168.1.42:8765`) on the
+phone, enter the password once — it stays logged in for 30 days. `--lan-off`
+puts everything back to localhost.
+
+**Understand what you are enabling.** The password is the only thing between
+your network and a shell on this machine: anyone who has it can start a ticket,
+and a ticket runs `claude -p` with Bash pre-approved. The traffic is plain HTTP,
+so a hostile Wi-Fi can read the password on first login. Do not do this on
+public or shared networks; for anything beyond your own home, use an encrypted
+tunnel (Tailscale, WireGuard, SSH) and leave the board on localhost.
+
+### 6. Start it automatically (optional)
 
 **Linux (systemd)** — `~/.config/systemd/user/werkbank-board.service`:
 
@@ -155,7 +245,10 @@ pythonw.exe C:\Pfad\zu\werkbank\src\werkbank\server.py
 
 | Key | Meaning |
 |---|---|
-| `port`, `host` | Where the board listens. Leave `host` at `127.0.0.1` — see Security. |
+| `port` | TCP port to listen on (default 8765). |
+| `host`, `lan`, `password_hash` | Interface, network mode and login hash — **do not edit by hand**. Use `--lan-on` / `--lan-off` / `--set-password` (see §5): they set the three together. Editing them by hand cannot silently expose the board, but it can stop it from starting: a non-local `host` without LAN mode, or LAN mode without a password, makes the board **refuse to start** and say why. |
+| `gates` | Per project: named checks an `opencode` ticket may pick, `{"<project path>": {"<name>": "<command>"}}`. The command lives here and nowhere else — a ticket only ever names one. |
+| `claude_bin` | Full path to the `claude` executable, if it is not on the board's `PATH` (a systemd service often has a different one). |
 | `default_project` | Target project for new tickets that name none. |
 | `projects` | Named project list (name → absolute path) shown in the dialogs. |
 | `agent_permission_mode` | Permission mode for dispatched runs (default `acceptEdits`). |
@@ -167,21 +260,25 @@ pythonw.exe C:\Pfad\zu\werkbank\src\werkbank\server.py
 ### Tests
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests -v
 ```
 
-129 tests, no dependencies, no network access needed. A handful of them
-skip themselves on Windows (they use shell-script stand-ins for the CLI).
+270 tests at the 1.0.0 tag, no dependencies, no network access needed. A handful skip
+themselves on Windows (they use shell-script stand-ins for the CLI) — CI
+prints those skips in the log so they don't go silently green.
 
 ## How it's built
 
 Python 3 standard library only, one `http.server` process, one static HTML
-page. See `docs/dev/stack.md` for the reasoning and `docs/journal/` for the
-complete, honest build history — every feature, every bug, every wrong turn,
-written down as it happened (including a security review that found a
-CSRF→RCE chain in this very tool and how it was closed).
+page. See `docs/dev/stack.md` for the reasoning, and `docs/dev/` for the
+decision records behind the bigger pieces. `docs/journal/` holds a sample of
+the build history as it was written down at the time — every feature, every bug,
+every wrong turn, including a security review that found a CSRF→RCE chain in
+this very tool. Those entries stop at the 1.0 development; later ones stay
+private. They are there to show what the journal habit is worth, not as
+reference documentation.
 
-## Security — read this before you deploy it
+## Security
 
 **A ticket is an executable prompt.** Dragging a ticket to *In Arbeit* runs
 `claude -p` in the ticket's target directory with `--permission-mode
@@ -192,16 +289,25 @@ as you.
 That is fine for its actual purpose — one person, one machine — and the board
 is built around that assumption:
 
-- It binds to `127.0.0.1` only. **Never expose it to a network** (`host` in
-  `config.json`): there is no login, so every device on that network would get
-  the shell access described above.
+- It binds to `127.0.0.1` only. The LAN mode (§5) is the ONLY way to open it
+  up, and it requires a password. That rule is enforced where the socket is
+  opened, not just in the helper: a `config.json` with a non-local `host` but
+  no LAN mode, or LAN mode without a password, makes the board **refuse to
+  start** and print why. Do not rely on the Host-header guard for this — it
+  stops browsers, not somebody with `curl`.
+- **Lost your phone? Change the password.** `--set-password` rotates the
+  session-signing secret, so every device that was logged in is logged out at
+  once — a 30-day cookie on a device you no longer have stops working
+  immediately.
 - Writes require an `application/json` content type and a same-origin `Origin`,
   and every request must carry a localhost `Host` — so a web page you happen to
   visit cannot drive the board (CSRF), and DNS rebinding is refused.
 - The page never renders ticket data as HTML, ticket fields cannot smuggle
-  extra frontmatter, the folder picker is confined to your home directory plus
-  registered projects, and agent logs are written to a private `0700`
-  directory.
+  extra frontmatter, and agent logs are written to a private `0700`
+  directory. The folder *picker* only offers your home directory and
+  registered projects — that is convenience, not containment: a ticket's
+  `project` may name any absolute path, and anyone who can set it can already
+  start an agent.
 - Publishing a Werkbank checkout publishes `tickets/` — the live board,
   including future tickets. Fork the code, not the board, if you don't want
   that.
@@ -209,14 +315,20 @@ is built around that assumption:
 If you hand the board to anyone else, or point it at content you did not
 write, treat that as granting shell access and tighten
 `agent_permission_mode` / `agent_allowed_tools` first. The findings behind
-these measures are in `docs/journal/2026-08-15-wb35-security-review.md`.
+these measures came out of a dedicated security review; the measures
+themselves are the list above and the tests in `tests/test_security.py`.
 
-## A note on language
+## Language
 
-The owner speaks German: the user manual (`docs/user/`), the CHANGELOG and all
-ticket content are German; code, commits, developer docs and the journal are
-English. `CLAUDE.md` is the working contract between the owner and the AI
-developer.
+The UI, user manual (`docs/user/`), [CHANGELOG](CHANGELOG.md) and all ticket
+content are **German** (the owner is a German-speaking non-developer). Code,
+commits, developer docs and the journal are English. `CLAUDE.md` is the
+working contract between the owner and the AI developer.
+
+## Contributing and issues
+
+Issues willkommen — persönliches Werkzeug, eigenwillige Antworten zu erwarten.
+For security findings see [SECURITY.md](SECURITY.md).
 
 ## License
 

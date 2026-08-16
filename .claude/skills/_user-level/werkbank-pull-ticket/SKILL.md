@@ -1,24 +1,35 @@
 ---
 name: werkbank-pull-ticket
 description: Use when the user asks this session to pull or work its Werkbank ticket — "zieh dir ein Ticket", "hol dir dein Ticket", "hast du ein Ticket?", "arbeite dein Ticket ab" — find the open ticket for THIS project on the Werkbank board and work it.
-version: 4
+version: 8
 ---
 
 # Werkbank: Pull Your Ticket
 
-Werkbank tickets live in `~/code/werkbank/tickets/*.md` (verify the
-path exists first; the repo may have moved). One file per ticket: flat `key: value`
-frontmatter (`id`, `title`, `type`, `status`, `assignee`, `project`, `priority`,
-`created`, `updated`) plus body sections `## Beschreibung` and `## Ergebnis`.
-Statuses: `offen → in_arbeit → review → erledigt`. `type` is `aufgabe` or `bug`;
-older files without the field count as `aufgabe`. Edit tickets with plain file
-tools.
+## Path to the Werkbank — the ONLY line you adapt
+
+    WERKBANK=/home/USER/code/agent_ticket
+
+Every command below starts with that assignment, so the path exists exactly
+once. Never write the path into a Python string: `~` is expanded by the SHELL,
+never by Python (that mistake shipped once — WB-47).
+
+Verify it before working: `ls "$WERKBANK/tickets" >/dev/null` — if that fails,
+say so and stop instead of guessing.
+
+Tickets are markdown files in `$WERKBANK/tickets/*.md`: flat `key: value`
+frontmatter (`id`, `title`, `type`, `status`, `assignee`, `project`,
+`priority`, …) plus body sections `## Beschreibung` and `## Ergebnis`.
+Statuses: `offen → zu_bearbeiten → in_arbeit → review → fehlgeschlagen →
+erledigt`. `type` is `aufgabe` or `bug`.
 
 ## 1. Find your ticket
 
 - Candidates: `status: offen` AND `project` equal to this session's working
   directory (compare resolved real paths).
 - Skip tickets whose `assignee` is not `claude` — name them, but leave them alone.
+  `assignee: opencode` means a local model owns it; the board
+  dispatches those. You only ever see one if it was **escalated** back to you.
 - Order: priority `hoch` > `normal` > `niedrig`, then lowest WB number. Take the
   first; mention any others.
 - No match → tell the user plainly ("kein offenes Ticket für dieses Projekt") and stop.
@@ -38,48 +49,129 @@ returns the ticket to `offen` with the user's answer recorded in the description
 
 ## 3. Claim and work
 
-- Set `status: in_arbeit` and `updated: <today>` in the ticket file, then start.
-- Work inside THIS project under its own rules (CLAUDE.md, commit discipline).
-- `type: bug` → debugging discipline is mandatory: FIRST reproduce the bug (prove
-  the cause, no guessing), THEN fix the cause (not the symptom), THEN add a
-  regression test that fails without the fix and passes with it. The evidence
-  (how reproduced, which test) belongs in `## Ergebnis`.
+    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 python3 - <<'EOF'
+    import os, sys
+    sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
+    from werkbank import store
+    store.update_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
+                        os.environ["WB"], {"status": "in_arbeit"})
+    EOF
+
+- Werkbank-Ticket (project = the Werkbank checkout)? Follow the project-local
+  skill `werkbank-work-ticket` (in `$WERKBANK/.claude/skills/`) — it is the
+  single source of truth for the workflow (clarity gate, work, verify,
+  journal/doc duty, honest Ergebnis, bug discipline). Everything below in
+  this skill only applies when the Werkbank skill is NOT reachable, e.g. for
+  tickets targeting OTHER projects.
+- Other project → work inside THIS project under its own rules
+  (CLAUDE.md, commit discipline).
+- `type: bug` (any project): FIRST reproduce the bug (prove the cause, no
+  guessing), THEN fix the cause (not the symptom), THEN add a regression test
+  that fails without the fix and passes with it. Evidence goes into `## Ergebnis`.
 - Never set `erledigt` — that column belongs to the user.
+
+## 3b. Checked tickets — `gate:` names a check, it is NOT a command
+
+A ticket may name a check that decides whether the work counts:
+
+    gate: Tests laufen durch
+
+**The name is only a name.** The command behind it lives in the board's
+`config.json` under `gates` -> `<project path>` -> `<name>`. Look it up there and
+run THAT; never invent a command because the name sounds like one. If the name is
+not in `config.json`, the board would refuse to dispatch it — say so instead of
+guessing.
+
+    "gates": { "/home/USER/code/agent_ticket": { "Tests laufen durch": "python3 -m pytest tests/ -q" } }
+
+Why the indirection: the board is reachable from the LAN, and a ticket is an
+executable prompt already. If a ticket field could carry a command, any request
+that edits a ticket would be remote code execution. Names cross the network,
+commands never do.
+
+**If a check is named, it decides whether you are finished — not your judgement.**
+Run it in the ticket's `project` directory and paste its REAL output into
+`## Ergebnis`. Never write "Tests laufen" without the output that proves it.
+
+Choosing the check matters more than running it: `npm run compile` type-checks
+WITHOUT running tests, so code can pass it while every test fails. If the
+configured check does not actually exercise the Akzeptanzkriterien, say so in the
+result rather than leaning on a green that means little.
+
+## 3c. Escalated tickets — read the two attempts BEFORE you start
+
+A ticket whose `assignee` changed from `opencode` to `claude` was escalated: the local
+model tried twice and the gate stayed red. Its `## Ergebnis` already contains BOTH
+attempts and the failing gate output.
+
+Read that first. It tells you what was already tried, and the gate output is usually the
+actual root cause. Starting from scratch wastes the work the GPU already did — the point
+of escalation is that the expensive model gets a head start, not a blank page.
+
+Do not hand an escalated ticket back to `opencode`. It failed there twice; a third
+attempt is not new information.
 
 ## 4. Report back
 
-- Write a short, honest German summary into `## Ergebnis`: what was done, what was
-  verified, what failed or stayed open. Failures go here too — a failed ticket
-  sitting silently in `in_arbeit` is a bug. Set `status: review`, bump `updated`.
-- Register THIS session as the project's last ticket session (WB-19): the next
-  board drag then HANDS the ticket to this chat visibly (WB-22); if this session
-  doesn't claim in time, a forked background run takes over — an open
-  conversation is never written into directly. The id comes ONLY from the
-  environment; if the variable is empty, skip registration and say so — never
-  guess an id:
+Write a short, honest German summary — what was done, what was verified, what
+failed or stayed open — and move the ticket to review:
 
-      sid="$CLAUDE_CODE_SESSION_ID"
-      [ -n "$sid" ] && python3 -c "import os, sys; sys.path.insert(0, '~/code/werkbank/src'); from werkbank import dispatch; dispatch.register_ticket_session(os.environ['PWD'], os.environ['CLAUDE_CODE_SESSION_ID'])"
+    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 \
+    ERGEBNIS="Kurz, ehrlich, auf Deutsch." python3 - <<'EOF'
+    import os, sys
+    sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
+    from werkbank import dispatch, store
+    tickets = os.path.join(os.environ["WERKBANK"], "tickets")
+    store.set_result(tickets, os.environ["WB"], os.environ["ERGEBNIS"])
+    store.update_ticket(tickets, os.environ["WB"], {"status": "review"})
+    # Register THIS session so the next board drag reaches this chat (WB-19/22).
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        dispatch.register_ticket_session(os.environ["PWD"], sid)
+    EOF
 
-- Commit the ticket-file change in the Werkbank repo (do not push; the Werkbank's
-  own session pushes):
+If `$CLAUDE_CODE_SESSION_ID` is empty, skip the registration and say so — never
+guess an id. Then commit the ticket file in the Werkbank repo (do not push):
 
-      git -C ~/code/werkbank add tickets/
-      git -C ~/code/werkbank commit -m "Work tickets: <id> (pulled by <project name>)"
+    git -C "$WERKBANK" add tickets/
+    git -C "$WERKBANK" commit -m "Work tickets: <id> (pulled by <project name>)"
 
-## 5. Handover watcher (WB-22) — keep running after registering
+## 5. Handover watcher — START IT WHEN YOU CLAIM, NOT WHEN YOU FINISH
 
-Start this watcher (Bash, run_in_background) so dragged tickets reach this chat
-visibly; restart it after each handled handover or timeout:
+**Only in an INTERACTIVE chat session — never in a dispatched background run,
+which must leave no background job behind at all.** Measured 2026-08-16
+(WB-77): a background run copied this rule from a resumed chat transcript and
+left the watcher looping. It had already delivered its result, but the watcher
+inherited the run's output pipe, so the board could not see the run had
+finished: 19 minutes of "in Arbeit", the queue stalled behind it, and the
+30-minute watchdog would have filed the SUCCESSFUL run as failed.
 
+**Rule:** restarting the watcher is the FIRST action after claiming a ticket.
+Doing it "at the end" fails whenever the end is interrupted — the next handover
+then sits unnoticed until the board's fallback picks it up, and the user has to
+ask why nothing happens (this happened three times in this project).
+
+Start it (Bash, run_in_background):
+
+    WERKBANK=/home/USER/code/agent_ticket
     end=$((SECONDS+7200)); while [ $SECONDS -lt $end ]; do
-      f=$(grep -l "^handover: $CLAUDE_CODE_SESSION_ID" ~/code/werkbank/tickets/*.md 2>/dev/null | head -1)
+      f=$(grep -l "^handover: $CLAUDE_CODE_SESSION_ID" "$WERKBANK"/tickets/*.md 2>/dev/null | head -1)
       [ -n "$f" ] && { echo "HANDOVER:$f"; exit 0; }; sleep 5
     done; echo TIMEOUT; exit 1
 
-When it exits with HANDOVER:<file>: CLAIM IMMEDIATELY (deadline ~5 min, then a
-background run takes over) by updating the ticket via the store:
+When it exits with HANDOVER:<file>, CLAIM IMMEDIATELY (deadline ~5 min, then a
+background run takes over):
 
-    python3 -c "import sys; sys.path.insert(0, '~/code/werkbank/src'); from werkbank import store; import os; store.update_ticket('~/code/werkbank/tickets', '<WB-n>', {'handover': '', 'session': os.environ['CLAUDE_CODE_SESSION_ID']})"
+    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 python3 - <<'EOF'
+    import os, sys
+    sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
+    from werkbank import store
+    store.update_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
+                        os.environ["WB"],
+                        {"handover": "", "handover_at": "",
+                         "session": os.environ["CLAUDE_CODE_SESSION_ID"]})
+    EOF
 
-Then tell the user the ticket arrived and work it visibly per steps 2–4.
+Claim within `chat_handover_minutes` (default 5, counted from the marker's own
+timestamp — it survives board restarts), then RESTART THE WATCHER, then tell the
+user the ticket arrived and work it visibly per steps 2–4.

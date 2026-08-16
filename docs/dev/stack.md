@@ -7,7 +7,7 @@ summary: Tickets are markdown files with flat frontmatter; the Kanban board is a
 
 # Stack decision
 
-Decided 2026-08-14 at first build (journal: [2026-08-14-init.md](../journal/2026-08-14-init.md)).
+Decided 2026-08-14 at first build (journal entry `2026-08-14-init.md`).
 
 ## What
 

@@ -20,10 +20,12 @@ onboarding dialog in plain German, one step at a time:
    (review). This needs the `werkbank-pull-ticket` skill installed at user level
    (`~/.claude/skills/`).
 3. **Offer the skill install.** If `~/.claude/skills/werkbank-pull-ticket/` does
-   not exist, offer to install it: from `staged-skills/` per
-   `staged-skills/README.md` if still staged there, otherwise by copying
-   `.claude/skills/_user-level/werkbank-pull-ticket/`. Install only after the
-   user says yes; if it is already installed, say so and skip.
+   not exist, offer to install it by copying
+   `.claude/skills/_user-level/werkbank-pull-ticket/` there. Install only after
+   the user says yes; if it is already installed, say so and skip.
+   (Historical note: an internal `staged-skills/` hand-off area existed while
+   the skill was being built and is documented in `docs/dev/`; it is not part
+   of the public copy and must not be referenced from user-facing paths.)
 
 ## Who you are
 
@@ -78,5 +80,5 @@ Record the choice and its why in `docs/dev/stack.md` when `src/` gets its first 
 - `CHANGELOG.md` — user-facing changes (their language)
 - `.claude/skills/` — this tool's skills, project-local (includes the developer-agent
   kit skills; updates arrive via the `syncing-the-kit` skill and `.developer-agent.json`).
-  `_user-level/` and `staged-skills/` are Werkbank's OWN delivery area for skills that
-  target projects install (e.g. `werkbank-pull-ticket`) — not part of the kit.
+  `_user-level/` is Werkbank's OWN delivery area for skills that target projects
+  install (e.g. `werkbank-pull-ticket`) — not part of the kit.
