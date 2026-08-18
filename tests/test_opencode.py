@@ -9,6 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from werkbank import opencode, store
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stubs import temp_dir, remove_tree, sh_stub, echo_command, posix_only
 
 
 def _cfg(**extra):
@@ -170,18 +172,14 @@ class RealSubprocessTest(unittest.TestCase):
     def _stand_in(self, tmp, name):
         """A script that records how it was called, mirroring opencode-task:
         the task arrives on STDIN and $2 is the MODEL ID."""
-        p = Path(tmp) / name
-        p.write_text(
-            "#!/bin/sh\n"
+        return sh_stub(
+            tmp, name,
             "printf 'ARGV1=[%s]\\n' \"$1\" >> \"$RECORD\"\n"
             "printf 'ARGV2=[%s]\\n' \"$2\" >> \"$RECORD\"\n"
-            "printf 'STDIN=[%s]\\n' \"$(cat)\" >> \"$RECORD\"\n",
-            encoding="utf-8")
-        p.chmod(0o755)
-        return str(p)
+            "printf 'STDIN=[%s]\\n' \"$(cat)\" >> \"$RECORD\"\n")
 
     def test_task_reaches_stdin_not_argv(self):
-        tmp = tempfile.mkdtemp()
+        tmp = str(temp_dir())
         record = Path(tmp) / "rec"
         script = self._stand_in(tmp, "opencode-task")
         old = opencode.OPENCODE_TASK
@@ -198,7 +196,7 @@ class RealSubprocessTest(unittest.TestCase):
 
     def test_review_prompt_is_not_argv(self):
         """A single argv element dies at ~128 KB (MAX_ARG_STRLEN)."""
-        tmp = tempfile.mkdtemp()
+        tmp = str(temp_dir())
         record = Path(tmp) / "rec"
         script = self._stand_in(tmp, "claude")
         old = opencode.CLAUDE_BIN
@@ -211,8 +209,18 @@ class RealSubprocessTest(unittest.TestCase):
         self.assertIn("STDIN=[Pruefe diesen Diff", record.read_text(encoding="utf-8"))
 
     def test_a_huge_diff_would_have_broken_argv(self):
-        with self.assertRaises(OSError):
-            subprocess.run(["/bin/echo", "x" * 200000], capture_output=True)
+        """Why the prompt goes on stdin: every system has a command-line limit,
+        they just differ. Linux refuses a single ~128 KB argument, Windows caps
+        the whole line even earlier, macOS allows about 1 MB. So the test grows
+        the argument until the platform says no, instead of hardcoding one
+        system's threshold and failing on another."""
+        for size in (200_000, 1_000_000, 4_000_000, 16_000_000):
+            try:
+                subprocess.run(echo_command("x" * size), capture_output=True)
+            except OSError:
+                return                      # the limit exists — that is the point
+        self.fail("no command-line limit found up to 16 MB — did the argument "
+                  "stop being passed as an argument?")
 
 
 class ClipTest(unittest.TestCase):
@@ -264,7 +272,7 @@ class SchemaTest(unittest.TestCase):
     def test_gate_cannot_be_set_through_the_api(self):
         """A gate is a shell command. The board is reachable on the LAN, so no
         request may introduce one — it may only come from the file itself."""
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         store.create_ticket(d, title="T", description="d", project="/proj")
         with self.assertRaises(ValueError):
             store.update_ticket(d, "WB-1", {"gate": "rm -rf /"})
@@ -277,7 +285,7 @@ class SchemaTest(unittest.TestCase):
 class DispatcherRoutingTest(unittest.TestCase):
     def test_opencode_ticket_never_reaches_the_claude_runner(self):
         from werkbank import dispatch
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         store.create_ticket(d, title="T", description="Tu was", project=str(d))
         store.update_ticket(d, "WB-1", {"assignee": "opencode", "status": "in_arbeit"})
         called = []
@@ -301,12 +309,12 @@ class GateNameIsNotACommandTest(unittest.TestCase):
     config.json and is only ever looked up by name."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         store.create_ticket(self.dir, title="T", description="x", project="/proj")
 
     def tearDown(self):
         import shutil
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_a_name_can_be_set(self):
         store.update_ticket(self.dir, "WB-1", {"gate": "tests"})
@@ -406,7 +414,7 @@ class NewFilesReachTheReviewTest(unittest.TestCase):
     while producing evidence that reads like a considered finding."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self._git("init", ".")
         (self.dir / "vorhanden.txt").write_text("alt\n", encoding="utf-8")
         self._git("add", "-A")
@@ -416,7 +424,7 @@ class NewFilesReachTheReviewTest(unittest.TestCase):
 
     def tearDown(self):
         import shutil
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def _git(self, *args):
         subprocess.run(["git", "-C", str(self.dir), *args], capture_output=True,
@@ -490,13 +498,14 @@ class Wb94TimeoutTest(unittest.TestCase):
         # The claude limit must have NO influence on the opencode lane.
         self.assertEqual(opencode.budget_seconds({"agent_timeout_minutes": 1}), 3600)
 
+    @posix_only
     def test_timeout_kills_the_whole_process_group(self):
         import time as _time
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         try:
             pidfile = d / "grandchild.pid"
             wrapper = d / "fake-opencode-task"
-            wrapper.write_text("#!/bin/sh\nsleep 8 &\necho $! > %s\nwait\n" % pidfile)
+            wrapper.write_text("#!/bin/sh\nsleep 8 &\necho $! > %s\nwait\n" % pidfile, encoding="utf-8")
             wrapper.chmod(0o755)
             old = opencode.OPENCODE_TASK
             opencode.OPENCODE_TASK = str(wrapper)
@@ -506,7 +515,7 @@ class Wb94TimeoutTest(unittest.TestCase):
             finally:
                 opencode.OPENCODE_TASK = old
             self.assertTrue(pidfile.exists(), "wrapper never started")
-            pid = int(pidfile.read_text().strip())
+            pid = int(pidfile.read_text(encoding="utf-8").strip())
             deadline = _time.monotonic() + 3
             alive = True
             while _time.monotonic() < deadline:
@@ -519,7 +528,7 @@ class Wb94TimeoutTest(unittest.TestCase):
             self.assertFalse(alive, f"grandchild {pid} survived the timeout")
         finally:
             import shutil as _shutil
-            _shutil.rmtree(d)
+            remove_tree(d)
 
     def test_timeout_becomes_honest_failure_not_internal_error(self):
         def run(cmd, **kw):
@@ -527,6 +536,74 @@ class Wb94TimeoutTest(unittest.TestCase):
         out = opencode.work_ticket(_t(gate="tests"), _cfg(), run=run)
         self.assertEqual(out.status, "fehlgeschlagen")
         self.assertIn("Zeitlimit", out.result)
+
+
+class Wb135GrandchildReapTest(unittest.TestCase):
+    """WB-135: after a SUCCESSFUL run, no descendant of the child may survive.
+
+    The production reproduction (WB-106, WB-107): the opencode process lived on
+    for minutes after its ticket was finalized, holding the local model and
+    blocking the queue. Whatever the exact chain — a bash `wait` that returned
+    early, opencode spawning a delayed cleanup, a missed pkill — the SAME rule
+    holds on both the timeout path (WB-94) and the success path: when
+    _run_grouped returns, the process group is empty.
+    """
+
+    @posix_only
+    def test_grandchild_from_a_successful_run_is_dead_after_return(self):
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+        import time as _time
+        d = str(temp_dir())
+        try:
+            pidfile = Path(d) / "grandchild.pid"
+            # Wrapper writes a final line and exits normally (rc=0), but leaves
+            # a `sleep` running in the same session — the exact shape the WB-106
+            # reproduction traced (opencode-task exited, opencode kept running).
+            wrapper = Path(d) / "wrapper.sh"
+            wrapper.write_text(
+                "#!/bin/sh\n"
+                # Mirror opencode-task: the descendant's fds go to files, so it
+                # does NOT hold the parent's stdout/stderr pipes. Without this
+                # the test measures pipe blocking (WB-77), not group leakage.
+                f"( sleep 60 </dev/null >/dev/null 2>&1 & echo $! > {pidfile} )\n"
+                "printf 'fertig\\n'\n"
+                "exit 0\n",
+                encoding="utf-8")
+            wrapper.chmod(0o755)
+            r = opencode._run_grouped([str(wrapper)], input="ignored", timeout=10)
+            self.assertEqual(r.returncode, 0)
+            pid = int(pidfile.read_text(encoding="utf-8").strip())
+            deadline = _time.monotonic() + 3
+            alive = True
+            while _time.monotonic() < deadline:
+                try:
+                    _os.kill(pid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                _time.sleep(0.05)
+            self.assertFalse(
+                alive,
+                f"grandchild {pid} survived the successful run — WB-135 regression")
+        finally:
+            remove_tree(d)
+
+    def test_well_behaved_run_is_still_a_normal_success(self):
+        """The unconditional pgid kill must not turn clean runs into failures.
+        A wrapper that exits cleanly with no descendants goes through untouched
+        and its return code and captured output survive intact."""
+        import shutil as _shutil
+        import tempfile as _tempfile
+        d = str(temp_dir())
+        try:
+            wrapper = sh_stub(d, "wrapper", "printf 'die antwort\\n'\nexit 0\n")
+            r = opencode._run_grouped([wrapper], input=None, timeout=10)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stdout.strip(), "die antwort")
+        finally:
+            remove_tree(d)
 
 
 if __name__ == "__main__":

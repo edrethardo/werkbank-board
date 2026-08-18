@@ -1,0 +1,28 @@
+{
+  "ticket": "WB-107",
+  "seite": "opencode",
+  "modus": "Werkbank-Dispatch, lokales Modell",
+  "modell": "Qwen3.8-27B-Instruct",
+  "wanduhr_s": 1420,
+  "start": "2026-08-16T18:10:44",
+  "ende": "2026-08-16T18:34:24.499206",
+  "kosten_usd_lokal": 0.0,
+  "kosten_usd_claude_review": "nicht einzeln gemessen (Groessenordnung wie WB-106: ~0.10 USD)",
+  "gate": {
+    "befehl": "python3 -m pytest tests/ -q",
+    "gruen": true,
+    "tests_gesamt": 325,
+    "tests_vorher": 323,
+    "unabhaengig_nachgefahren": true
+  },
+  "artefakt": {
+    "dateien": [
+      "src/werkbank/board.html",
+      "docs/user/board-und-tickets.md",
+      "CHANGELOG.md",
+      "tests/test_dispatch.py"
+    ],
+    "zeilen_plus_minus": "+103/-17 (Arbeitsbaum, inkl. Journal/Changelog)"
+  },
+  "art_der_aufgabe": "Text-/Doku-Korrekturen plus 2 Tests — die leichteste der drei Aufgaben"
+}

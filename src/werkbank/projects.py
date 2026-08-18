@@ -47,6 +47,45 @@ def list_dirs(path=None, roots=None) -> dict:
     return {"path": str(p), "parent": parent, "dirs": dirs}
 
 
+# Keys a RUNNING board may re-read from config.json (WB-124). Deliberately
+# small: a project session registers itself by writing the file directly (no
+# password, no HTTP), so the board must see the new project without a restart —
+# but nothing that decides who may reach the board (`lan`, `password_hash`,
+# `host`, `port`) is ever hot-reloaded. A file edit must not be able to switch
+# authentication off under a running server.
+HOT_KEYS = ("projects", "nonblocking_review", "gates")
+
+_STAMPS = {}
+
+
+def refresh_from_disk(cfg: dict, config_path) -> bool:
+    """Update `cfg`'s hot-reloadable keys from config.json when the file has
+    changed. Returns True if anything was updated. Never raises: a missing or
+    half-written file simply means "no update this time" — the stamp is only
+    remembered after a successful parse, so the repaired file is picked up."""
+    path = Path(config_path)
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    stamp = (st.st_mtime_ns, st.st_size)
+    if _STAMPS.get(str(path)) == stamp:
+        return False
+    try:
+        disk = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(disk, dict):
+        return False
+    _STAMPS[str(path)] = stamp
+    changed = False
+    for key in HOT_KEYS:
+        if key in disk and disk[key] != cfg.get(key):
+            cfg[key] = disk[key]
+            changed = True
+    return changed
+
+
 def set_review_mode(config_path, path: str, nonblocking: bool) -> dict:
     """Per-project queue rule (WB-40): with nonblocking=True a ticket waiting in
     Review no longer holds back the project's queue. Returns the updated map;
@@ -91,6 +130,17 @@ def add_project(config_path, name: str, path: str) -> dict:
                 projects = cfg.get("projects") or {}
                 if any(name.lower() == existing.lower() for existing in projects):
                     raise ValueError(f"Es gibt schon ein Projekt namens „{name}“.")
+                # WB-124: a session registering itself must not create a second
+                # entry for the same folder — the PATH is what dispatch matches
+                # tickets on, so two names for one folder split its queue.
+                for existing_name, existing_path in projects.items():
+                    try:
+                        same = Path(existing_path).resolve() == p.resolve()
+                    except OSError:
+                        same = str(existing_path) == str(p)
+                    if same:
+                        raise ValueError(
+                            f"Dieser Ordner ist schon als „{existing_name}“ angelegt.")
                 projects[name] = str(p)
                 cfg["projects"] = projects
                 config_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",

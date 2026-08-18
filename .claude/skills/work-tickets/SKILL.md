@@ -30,7 +30,13 @@ priority). No dispatch.
 
 For each targeted ticket with status `offen`, ordered `hoch` > `normal` > `niedrig`:
 
-1. Set `status: in_arbeit` and `updated: <today>` in the ticket file.
+1. Claim it with `store.claim_ticket(tickets_dir, id, session_id)` — status,
+   session and `claimed_at` in one call. A bare status write makes the board
+   treat the ticket as stranded and take it back mid-work (WB-181).
+   Claim when you START. A claim is what turns the card "In Arbeit"; claiming
+   and then finishing something else first makes the board show work that is
+   not happening (WB-203, 2026-08-17 — the user noticed and stopped believing
+   the board). Since WB-204 the card counts the minutes and says so.
 2. Spawn a subagent (Agent tool, general-purpose; run in background for
    parallelism). A ticket with `assignee: opencode` is NOT yours to spawn —
    the board dispatches it to the local model itself.

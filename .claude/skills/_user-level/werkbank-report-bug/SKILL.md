@@ -8,7 +8,7 @@ version: 3
 
 ## Path to the Werkbank — the ONLY line you adapt
 
-    WERKBANK=/home/USER/code/agent_ticket
+    WERKBANK=/pfad/zur/werkbank
 
 Every command below starts with that assignment. Never write the path into a
 Python string: `~` is expanded by the SHELL, never by Python (WB-47).
@@ -41,7 +41,7 @@ Say which one you chose and why; let the user override.
 Values travel through the ENVIRONMENT — a quote in the user's text must never
 end up inside the Python source (WB-35):
 
-    WERKBANK=/home/USER/code/agent_ticket \
+    WERKBANK=/pfad/zur/werkbank \
     WB_TITLE="<kurzer Bug-Titel>" \
     WB_PRIO="<hoch|normal|niedrig>" \
     WB_PROJECT="$PWD" \

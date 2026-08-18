@@ -42,7 +42,7 @@ first implementation, and it is wrong here for two independent reasons.
 Naming solves both at once:
 
     ticket:       gate: Tests laufen durch
-    config.json:  "gates": {"/home/USER/code/agent_ticket":
+    config.json:  "gates": {"/pfad/zur/werkbank":
                              {"Tests laufen durch": "python3 -m pytest tests/ -q"}}
 
 The set of runnable commands is exactly what the owner wrote into `config.json`,
@@ -69,9 +69,12 @@ commands and the password hash before the page ever sees the config.
 Endpoint unreachable (`opencode-task` exit 4) is infrastructure, not a ticket
 failure: the ticket returns to `offen` with nothing recorded against it.
 
-One wall-clock budget from `agent_timeout_minutes` covers both attempts and both
-checks, so an opencode ticket cannot hold the single serialized queue slot longer
-than a Claude ticket may.
+One wall-clock budget from `opencode_timeout_minutes` (default 60, twice the
+claude default — WB-94: inheriting `agent_timeout_minutes` was a bug, local runs
+are slower) covers both attempts and both
+checks, so an opencode ticket cannot hold its lane open indefinitely. The
+lanes run in PARALLEL (WB-92): a local run and a claude run of different
+projects do not wait for each other.
 
 ## The review, and why it runs in an empty directory
 

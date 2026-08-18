@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stubs import temp_dir, remove_tree
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from werkbank import guard, store
@@ -51,10 +54,10 @@ class FrontmatterInjectionTest(unittest.TestCase):
     """F4: no field may smuggle extra frontmatter lines."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_newline_in_title_is_refused(self):
         with self.assertRaises(ValueError):
@@ -77,7 +80,7 @@ class FrontmatterInjectionTest(unittest.TestCase):
     def test_foreign_id_never_renames_outside_the_folder(self):
         t = store.create_ticket(self.dir, title="Normal", description="x")
         path = next(self.dir.glob("WB-*.md"))
-        path.write_text(path.read_text().replace(f"id: {t.id}", "id: ../../tmp/pwn"),
+        path.write_text(path.read_text(encoding="utf-8").replace(f"id: {t.id}", "id: ../../tmp/pwn"),
                         encoding="utf-8")
         with self.assertRaises(ValueError):
             store.update_ticket(self.dir, t.id, {"title": "Neu"})
@@ -90,34 +93,30 @@ class SymlinkTest(unittest.TestCase):
     """F8: a symlinked ticket file must not be read through."""
 
     def test_symlinks_in_tickets_dir_are_ignored(self):
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         try:
             secret = d / "geheim.txt"
-            secret.write_text("---\nid: WB-9\ntitle: geheim\n---\n\nInhalt\n")
+            secret.write_text("---\nid: WB-9\ntitle: geheim\n---\n\nInhalt\n", encoding="utf-8")
             (d / "WB-99-link.md").symlink_to(secret)
             tickets, errors = store.load_tickets_with_errors(d)
             self.assertEqual(tickets, [])
             self.assertEqual(errors, [])
         finally:
-            shutil.rmtree(d)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            remove_tree(d)
 
 
 class BrowseContainmentTest(unittest.TestCase):
     """F3: the folder picker must not enumerate the whole filesystem."""
 
     def setUp(self):
-        self.home = Path(tempfile.mkdtemp())
+        self.home = temp_dir()
         (self.home / "innen").mkdir()
-        self.outside = Path(tempfile.mkdtemp())
+        self.outside = temp_dir()
         (self.outside / "geheim").mkdir()
 
     def tearDown(self):
-        shutil.rmtree(self.home, ignore_errors=True)
-        shutil.rmtree(self.outside, ignore_errors=True)
+        remove_tree(self.home)
+        remove_tree(self.outside)
 
     def test_path_outside_the_roots_is_refused(self):
         from werkbank import projects
@@ -143,10 +142,10 @@ class DefaultProjectGuardTest(unittest.TestCase):
     def setUp(self):
         from werkbank import setup
         self.setup = setup
-        self.repo = Path(tempfile.mkdtemp())
+        self.repo = temp_dir()
 
     def tearDown(self):
-        shutil.rmtree(self.repo)
+        remove_tree(self.repo)
 
     def test_missing_config_file_warns(self):
         msg = self.setup.config_warning({"default_project": str(self.repo)},
@@ -240,16 +239,36 @@ class FriendlyStartupTest(unittest.TestCase):
         self.assertNotIn("Traceback", msg)
 
     def test_missing_claude_is_a_warning_not_a_stop(self):
-        warn = self.setup.claude_warning(lambda name: None)
+        warn = self.setup.claude_warning(lambda name: None, candidates=[])
         self.assertIsNotNone(warn)
         self.assertIn("claude", warn.lower())
         self.assertIsNone(self.setup.claude_warning(lambda name: "/usr/bin/claude"))
+
+    def test_no_warning_when_only_the_fallback_path_has_claude(self):
+        """WB-213: the board runs as a systemd user service, whose PATH does
+        not carry ~/.local/bin. `which` fails there while the dispatcher finds
+        claude via the WB-76 fallback — and the user was told that starting a
+        ticket would fail, which was false. Measured 2026-08-18 on this
+        machine: the hint printed, ~/.local/bin/claude present, dispatch fine."""
+        found = Path(__file__)                    # any path that exists
+        self.assertIsNone(self.setup.claude_warning(lambda name: None,
+                                                    candidates=[found]))
+
+    def test_a_configured_claude_bin_silences_the_warning(self):
+        self.assertIsNone(self.setup.claude_warning(
+            lambda name: None, cfg={"claude_bin": "/eigenes/claude"},
+            candidates=[]))
+
+    def test_warning_and_dispatcher_ask_the_same_question(self):
+        """The two used to disagree; they are now one function."""
+        from werkbank import dispatch
+        self.assertIs(dispatch.resolve_claude, self.setup.resolve_claude)
 
     def test_service_unit_is_unbuffered(self):
         unit = Path.home() / ".config/systemd/user/werkbank-board.service"
         if not unit.exists():
             self.skipTest("kein systemd-Dienst auf dieser Maschine")
-        self.assertIn("PYTHONUNBUFFERED=1", unit.read_text())
+        self.assertIn("PYTHONUNBUFFERED=1", unit.read_text(encoding="utf-8"))
 
 
 class ExposureRefusedAtTheBoundaryTest(unittest.TestCase):
@@ -280,10 +299,83 @@ class ExposureRefusedAtTheBoundaryTest(unittest.TestCase):
         self.assertIsNone(self.server.exposure_refusal("0.0.0.0", True, "pbkdf2$x$y"))
 
     def test_localhost_is_always_fine(self):
-        for host in ("127.0.0.1", "localhost", "::1", ""):
+        for host in ("127.0.0.1", "localhost", "::1", "127.0.0.5"):
             with self.subTest(host=host):
                 self.assertIsNone(self.server.exposure_refusal(host, False, ""))
+
+    def test_every_spelling_of_all_interfaces_is_refused(self):
+        """Found by an adversarial review: `host: ""` was in the allow-list —
+        and `bind(("", port))` is INADDR_ANY, i.e. 0.0.0.0. With `lan` off there
+        is no login at all, so the value that reads like "nothing configured"
+        was an unauthenticated path to running commands on this machine. The
+        old test ASSERTED that hole as intended behaviour, which is why nothing
+        caught it."""
+        for host in ("", "0.0.0.0", "::", "*", "0", "::0", " "):
+            with self.subTest(host=host):
+                self.assertIsNotNone(
+                    self.server.exposure_refusal(host, False, ""),
+                    f"{host!r} binds every interface and must not pass")
+
+    def test_a_name_we_cannot_resolve_counts_as_exposing(self):
+        """Refusing to start is recoverable; guessing wrong is not."""
+        self.assertIsNotNone(self.server.exposure_refusal("mein-rechner", False, ""))
 
     def test_a_bound_lan_ip_without_a_password_also_refuses(self):
         """Not just 0.0.0.0 — any non-local address is exposure."""
         self.assertIsNotNone(self.server.exposure_refusal("10.77.0.50", True, ""))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class RefusalHappensBeforeAnySideEffectTest(unittest.TestCase):
+    """WB-184: a board that refuses to start must not change anything first.
+    The fresh-machine test caught the startup sweep marking a healthy in_arbeit
+    ticket as fehlgeschlagen on the way out of a refused start — the user then
+    has a broken ticket AND no board."""
+
+    def test_refusal_check_precedes_the_startup_sweep(self):
+        """WB-229 moved the side effects (sweep, dispatcher, handover arming)
+        into `boot()`. The property is unchanged: nothing may happen before
+        the board has decided it is allowed to run at all."""
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parent.parent
+               / "src" / "werkbank" / "server.py").read_text(encoding="utf-8")
+        boot = src[src.index("def boot():"):src.index("def main():")]
+        self.assertIn("sweep_orphaned", boot,
+                      "the startup sweep is no longer where this test looks")
+        body = src[src.index("def main():"):]
+        self.assertLess(body.index("exposure_refusal"), body.index("boot()"),
+                        "the board boots (sweep, dispatcher) before deciding "
+                        "it will not start")
+        before_boot = body[:body.index("boot()")]
+        self.assertNotIn("sweep_orphaned", before_boot)
+
+
+class SecurityPolicyMatchesTheCodeTest(unittest.TestCase):
+    """An adversarial review found SECURITY.md promising that an attacker
+    cannot aim an agent outside the configured project list. No such check
+    exists — `project` is any absolute path, and the README says so honestly
+    two files away. A security policy that overstates the guarantee misleads
+    whoever deploys it and invites reports of designed behaviour."""
+
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parent.parent
+        self.policy = (self.repo / "SECURITY.md").read_text(encoding="utf-8")
+
+    def test_it_does_not_promise_project_confinement(self):
+        lowered = self.policy.lower()
+        self.assertNotIn("outside the configured project list", lowered)
+
+    def test_it_says_plainly_that_project_is_unconfined(self):
+        self.assertIn("any absolute path", self.policy)
+
+    def test_the_code_really_does_not_confine_it(self):
+        """If someone ever ADDS confinement, this test fails and the policy
+        should be updated to promise it."""
+        server = (self.repo / "src" / "werkbank" / "server.py").read_text(encoding="utf-8")
+        create = server.split("store.create_ticket(", 1)[1][:600]
+        self.assertNotIn("projects", create.split("nach=")[0],
+                         "project seems to be checked against the list now — "
+                         "say so in SECURITY.md")

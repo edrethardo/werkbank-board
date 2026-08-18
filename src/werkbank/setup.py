@@ -66,10 +66,35 @@ def port_busy_message(port: int) -> str:
     )
 
 
-def claude_warning(which=shutil.which):
+def resolve_claude(cfg: dict = None, which=shutil.which, candidates=None):
+    """Find the claude binary. A systemd service does not necessarily carry the
+    user's PATH, so fall back to the usual install locations (WB-76)."""
+    configured = (cfg or {}).get("claude_bin")
+    if configured:
+        return configured
+    found = which("claude")
+    if found:
+        return found
+    if candidates is None:
+        candidates = [Path.home() / ".local" / "bin" / "claude",
+                      Path("/usr/local/bin/claude"), Path("/usr/bin/claude")]
+    for path in candidates:
+        if Path(path).exists():
+            return str(path)
+    return None
+
+
+def claude_warning(which=shutil.which, cfg: dict = None, candidates=None):
     """Warn (not stop) when the claude CLI is missing: the board is still
-    useful for writing and organising tickets."""
-    if which("claude"):
+    useful for writing and organising tickets.
+
+    WB-213: this asks the SAME question the dispatcher asks. It used to call
+    `shutil.which` alone, so a board started by systemd — whose PATH does not
+    carry ~/.local/bin — greeted the user with „ein Ticket zu starten schlägt
+    fehl" while dispatching worked perfectly via the WB-76 fallback. Measured
+    2026-08-18 on this machine: warning printed, `~/.local/bin/claude` present.
+    A false alarm about the tool's core function is worse than none."""
+    if resolve_claude(cfg, which=which, candidates=candidates):
         return None
     return (
         "Das Programm 'claude' wurde nicht gefunden. Tickets anlegen und "
@@ -142,11 +167,13 @@ def set_lan(config_path, enabled: bool) -> str:
     _save(config_path, cfg)
     if not enabled:
         return ("Netzwerk-Modus aus — das Board ist wieder nur auf diesem "
-                "Rechner erreichbar. Jetzt neu starten:  systemctl --user "
-                "restart werkbank-board")
+                "Rechner erreichbar. Jetzt das Board neu starten (als Dienst: "
+                "systemctl --user restart werkbank-board; sonst einfach "
+                "beenden und wieder starten).")
     addr = local_address(cfg.get("port", 8765))
     return (f"Netzwerk-Modus an. Vom Handy im selben WLAN: {addr}\n"
-            "Erst neu starten:  systemctl --user restart werkbank-board\n"
+            "Erst das Board neu starten (als Dienst: systemctl --user restart "
+            "werkbank-board; sonst beenden und wieder starten).\n"
             "Achtung: Wer das Passwort hat, kann Agenten starten — also Befehle "
             "auf diesem Rechner ausführen. Der Verkehr im WLAN ist "
             "unverschlüsselt; in fremden Netzen besser aus lassen.")

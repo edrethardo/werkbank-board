@@ -23,12 +23,16 @@ import ipaddress
 
 
 def _split_host(host: str):
+    """(name, port) from a Host header; an *absent* port is None — it means
+    "the connection's own port", not "any port"."""
     host = (host or "").strip()
     if host.startswith("["):                      # [::1]:8765
         name, _, port = host.partition("]")
-        return name[1:], port.lstrip(":")
+        return name[1:], port.lstrip(":") or None  # no colon after ]
+    if ":" not in host:                           # browser omits the standard port
+        return host, None
     name, _, port = host.rpartition(":")
-    return (name or host), port
+    return (name or host), port or None
 
 
 def _is_private(name: str) -> bool:
@@ -42,6 +46,12 @@ def _is_private(name: str) -> bool:
 
 
 def _allowed_hosts(port) -> set:
+    # With port=None the set holds the port-less forms: browsers send
+    # "Host: 127.0.0.1" (no colon) whenever the connection's own port is
+    # the standard one — a board on port 80 (WB-106; setup.py even
+    # suggests 80) must not lock itself out.
+    if port is None:
+        return {"127.0.0.1", "localhost", "[::1]"}
     return {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
 
 
@@ -52,9 +62,11 @@ def check_read(headers, port, lan: bool = False):
         return True, None
     if host in _allowed_hosts(port):
         return True, None
+    if host in _allowed_hosts(None):          # WB-106: browsers omit port 80
+        return True, None
     if lan:
         name, host_port = _split_host(host)
-        if _is_private(name) and (not host_port or host_port == str(port)):
+        if _is_private(name) and (host_port is None or host_port == str(port)):
             return True, None
         return False, ("Zugriff nur über die lokale Netzwerk-Adresse möglich "
                        f"(angefragter Host: {host}).")

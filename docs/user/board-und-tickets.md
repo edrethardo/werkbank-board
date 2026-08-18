@@ -32,13 +32,14 @@ Absturz automatisch neu. **Ohne diesen Schritt musst du das Board selbst
 starten**, mit `python3 src/werkbank/server.py` oder per Chat-Befehl **„Starte
 das Board."** Ein Lesezeichen auf die Adresse spart dir das Tippen.
 
-Das Board hat sechs Spalten:
+Das Board hat sieben Spalten:
 
 | Spalte | Bedeutung |
 |---|---|
 | **Offen** | Wartet auf Bearbeitung |
-| **Zu bearbeiten** | Deine Warteschlange: startet automatisch, sobald das vorige Ticket fertig ist |
+| **Zu bearbeiten** | Deine Warteschlange: startet automatisch, sobald das vorige Ticket fertig ist. Die Spalte zeigt die echte Abarbeitungs-Reihenfolge; du sortierst sie **mit der Maus** um oder mit dem Knopf **▲ nach oben** (jeweils innerhalb derselben Priorität) |
 | **In Arbeit** | Ein Agent arbeitet gerade daran |
+| **Rückfrage** | Der Agent braucht eine Entscheidung von dir — Karte zeigt die Frage und ein Antwortfeld |
 | **Review** | Der Agent ist fertig — du prüfst das Ergebnis |
 | **Fehlgeschlagen** | Der Agenten-Lauf ist technisch gescheitert (Absturz, Zeitlimit o. Ä.) — der Grund steht im Ticket |
 | **Erledigt** | Von dir abgenommen. Nur du schiebst Tickets hierher |
@@ -50,6 +51,30 @@ einen Knopf **„Erneut versuchen"** — ein Klick (oder Ziehen nach „In Arbei
 startet den Agenten neu. Auch Tickets, deren Lauf durch einen Board-Neustart
 abgeschnitten wurde, landen beim nächsten Start automatisch hier statt ewig in
 „In Arbeit" zu hängen.
+
+### Wenn der Agent nicht weiter weiß: Spalte „Rückfrage"
+
+Manchmal fehlt einem Agenten mitten in der Arbeit eine Information oder eine
+Entscheidung — welche Bibliothek er nehmen soll, welchen Namen ein Feld
+bekommt, welches von zwei Verzeichnissen gemeint ist. Statt zu raten (und
+womöglich das Falsche zu bauen) oder zu scheitern, **pausiert er und fragt
+dich**: Das Ticket landet in der Spalte **Rückfrage**, die Karte trägt einen
+roten Rahmen und zeigt die Frage direkt darauf, mit einem Antwortfeld
+darunter — am Rechner und **am Handy**.
+
+Du tippst die Antwort ein, drückst **„Antworten"**, und der Agent setzt seine
+Arbeit **in derselben Unterhaltung** fort — ohne Kontextverlust und ohne dass
+neues Kontingent für den ganzen Kontext verbraucht wird. Andere Tickets
+laufen unterdessen weiter; das wartende Ticket blockiert die Warteschlange
+nicht. Antwortest du nicht, bleibt es einfach liegen — kein Zeitlimit.
+
+**Nur `claude`-Tickets können pausieren und dich fragen.** Die lokalen
+Bearbeiter `opencode` und `dsh` starten jede Aufgabe frisch — es gibt
+keine Sitzung, die deine Antwort später fortsetzen könnte. Antworten sie
+trotzdem mit einer Frage, landet das Ticket in **Fehlgeschlagen** mit
+einer klaren Begründung (statt still in Review mit der Frage im
+Ergebnis-Feld). Das Ticket-Formular zeigt diesen Hinweis, sobald du
+`opencode` oder `dsh` wählst.
 
 ## Vom Handy aus benutzen
 
@@ -73,7 +98,7 @@ Schreibtisch-Seite:
   mit ins Bild. Senkrechtes Scrollen und Tippen auf Knöpfe bleiben unberührt.
 - **Oben eine Reihe von Schaltern** (Offen · Zu bearbeiten · In Arbeit · Review ·
   Fehlgeschlagen · Erledigt) mit der jeweiligen Anzahl. Du tippst einen an und
-  siehst genau diese Liste — statt sechs Blöcke untereinander zu scrollen. Das
+  siehst genau diese Liste — statt sieben Blöcke untereinander zu scrollen. Das
   Board merkt sich, wo du zuletzt warst.
 - **Ein-Tipp-Aktionen auf jeder Karte**: In „Offen" stehen dort **▶ Starten**
   und **≡ Warteschlange**, in „Review" **Annehmen** und **Ablehnen**, in
@@ -121,6 +146,17 @@ Tickets einfach im Menü aus, und jede Karte zeigt ihr Projekt als kleines
 Abzeichen (voller Pfad beim Drüberfahren). Im Chat genügt der Projektname
 („erstelle ein Ticket für Mein Spiel: …"). Ältere Tickets mit eigenen Pfaden
 bleiben unverändert gültig.
+
+**Noch bequemer bei einem neuen Projekt:** Du musst gar nicht ins Board. Sag in
+der Unterhaltung des neuen Projekts einfach **„registriere dieses Projekt bei
+der Werkbank"** — die Session trägt sich selbst ein (sie schlägt einen Namen aus
+dem Ordnernamen vor, den du ändern kannst). Das Board zeigt das Projekt danach
+ohne Neustart, ein Neuladen der Seite genügt. Ist der Ordner schon angemeldet,
+sagt sie dir das, statt einen zweiten Eintrag anzulegen. Dafür braucht die
+Session einmalig den Skill `werkbank-register-project` — beim `init`-Dialog
+biete ich ihn zusammen mit dem Ticket-Skill an. Zwei Dinge macht dieser Weg
+bewusst nicht: keine Prüfung für lokale Modelle hinterlegen (sag mir Bescheid,
+wenn du dort `opencode`-Tickets willst) und keine Tickets anlegen.
 
 Wird es voller auf dem Board, hilft das **Filter-Menü** oben: Projekt auswählen,
 und das Board zeigt nur noch dessen Tickets („Alle Projekte" hebt den Filter
@@ -194,13 +230,46 @@ Alternativ geht es weiter per Chat: **„Arbeite die Tickets ab"** (oder gezielt
    fragt dich nach dem Grund (Pflichtfeld), schreibt ihn ins Ticket und schiebt es
    zurück nach **Offen**, damit nachgebessert wird.
 
+### Eine zweite Meinung einholen: 🔍 Review-Bot
+
+Auf jeder Karte in **Review**, **Erledigt** und **Fehlgeschlagen** sitzt ein Knopf
+**🔍 Review-Bot**. Er schickt das Ticket und die dazugehörigen Code-Änderungen an
+eine **frische Claude-Instanz**, die nichts von der bisherigen Unterhaltung weiß
+und den ausdrücklichen Auftrag hat, Fehler zu suchen — nicht zu loben. Das ist
+gedacht für den Fall, dass ein Agent „alles läuft" sagt und du das nicht so recht
+glaubst.
+
+- Der Lauf dauert **ein bis zwei Minuten**. Solange steht auf dem Knopf
+  „🔍 Review läuft …", und im geöffneten Ticket ein entsprechender Hinweis.
+- **Der Bericht landet im Ticket**: Karte anklicken → er steht als eigener
+  aufklappbarer Abschnitt **direkt über dem Ergebnis**, der neueste zuoberst und
+  schon aufgeklappt. In der Überschrift stehen Zeitpunkt und Preis.
+- Mehrfach klicken ist erlaubt — jeder Bericht bleibt stehen, du kannst
+  vergleichen.
+- **Es kostet ein paar Cent pro Klick** (typisch 5 bis 20). Die Summe aller Klicks
+  auf einem Ticket steht als **🔍 X.XX $** auf der Karte, getrennt von den
+  💰-Kosten des eigentlichen Agenten-Laufs.
+- Der Bot findet die Änderungen über die Commits, die dein Ticket erwähnen. Gibt
+  es keine, prüft er den ungespeicherten Stand — und sagt es, wenn er nichts
+  gefunden hat.
+
+Der Bericht ist eine Meinung, kein Urteil. Ob das Ticket nach **Erledigt** geht,
+entscheidest weiter nur du.
+
 ## Tickets vom Modell auf deinem eigenen Rechner bearbeiten lassen
 
-Neben Claude kann auch **opencode** Tickets abarbeiten — das ist das Modell, das
-auf deinem eigenen Rechner läuft. Es kostet kein Kontingent und keine Gebühren.
-Du wählst es, indem du bei **„Zugewiesen an"** `opencode` einträgst.
+Neben Claude können auch **opencode** und **dsh** Tickets abarbeiten — beides
+Wege zu dem Modell, das auf deinem eigenen Rechner läuft. Sie kosten kein
+Kontingent und keine Gebühren. Du wählst sie im Ticket-Fenster bei
+**„Zugewiesen an"** aus der Liste aus.
 
-**Dafür braucht das Ticket eine Prüfung.** Sobald du `opencode` einträgst,
+> **opencode oder dsh?** Beide reden mit derselben Grafikkarte im selben
+> Rechner, und beide brauchen zwingend eine Prüfung. Sie laufen deshalb auch
+> **nacheinander, nie gleichzeitig** — zwei gleichzeitige Läufe würden sich
+> gegenseitig ausbremsen. Auf der Karte steht dann „wartet, bis der laufende
+> Lauf des lokalen Modells fertig ist".
+
+**Dafür braucht das Ticket eine Prüfung.** Sobald du `opencode` auswählst,
 erscheint im Ticket ein Auswahlfeld **„Prüfung"**. Das ist der Grund:
 
 > Ein Modell auf dem eigenen Rechner meldet auch dann „fertig", wenn nichts
@@ -234,6 +303,19 @@ ab: Sobald das laufende Ticket fertig ist, startet das nächste — nach Priorit
 geordnet (Hoch vor Normal vor Niedrig). Jede wartende Karte schreibt dir dazu,
 worauf sie gerade wartet.
 
+**Die Spalte steht in genau der Reihenfolge, in der abgearbeitet wird** — oben
+kommt als Nächstes dran. Du änderst sie auf zwei Wegen:
+
+- **Karte mit der Maus an die gewünschte Stelle ziehen.** Beim Ziehen zeigt ein
+  farbiger Strich, wo sie landet.
+- **▲ nach oben** auf der Karte — einen Platz nach vorn. Das ist der Weg auf dem
+  Handy, wo Ziehen innerhalb der Spalte nicht geht.
+
+**Priorität geht vor Reihenfolge.** Ziehst du ein „Normal"-Ticket über ein
+„Hoch"-Ticket, landet es ganz oben in *seiner* Priorität — nicht darüber. Wenn
+es wirklich als Erstes drankommen soll, stell im Ticket die Priorität auf
+**Hoch**.
+
 Standardmäßig **pausiert die Warteschlange, solange ein Ticket dieses Projekts
 in Review liegt** — so behältst du die Kontrolle und prüfst jedes Ergebnis,
 bevor weitergearbeitet wird. Willst du das nicht, öffne **„📁 Projekte"** und
@@ -242,8 +324,14 @@ Dann läuft ein Ticket nach dem anderen durch, und die fertigen sammeln sich in
 Review, bis du Zeit zum Abnehmen hast.
 
 Andere Projekte halten deine Warteschlange nie auf — jedes Projekt hat seine
-eigene Reihe. (Gleichzeitig gearbeitet wird trotzdem nie: Agenten laufen immer
-einer nach dem anderen.)
+eigene Reihe. Und es sind **zwei Spuren** am Werk: Die **Claude-Spur** und die
+Spur deines **eigenen Modells** — auf der laufen `opencode` und `dsh`
+gemeinsam, weil sie sich dieselbe Grafikkarte teilen. Innerhalb einer Spur
+arbeitet immer nur einer; die beiden Spuren laufen **parallel** nebeneinander.
+Läuft gerade ein Claude-Agent, kann gleichzeitig ein Ticket des lokalen
+Modells auf der anderen Spur weiterarbeiten — und umgekehrt. Warte ein Ticket auf seine Spur, weil dort
+schon ein Agent dran ist, sagt die Karte dir das auch (warum sie gerade
+wartet).
 
 ## Tickets verknüpfen
 
@@ -283,6 +371,26 @@ Live-Zustand des Agenten:
 Scheitert ein Lauf, sagt das Ticket in klarem Deutsch warum — zum Beispiel
 „Nutzungslimit erreicht, später mit Erneut versuchen nochmal starten".
 
+### Wenn eine Chat-Sitzung das Ticket übernommen hat
+
+Ein Ticket kann statt vom Board auch **direkt in einem Chat** bearbeitet werden.
+Dann läuft kein Agenten-Lauf, den das Board beobachten könnte — es weiß nur, dass
+eine Sitzung das Ticket beansprucht hat. Genau das steht jetzt auch da:
+
+- **„🗨️ seit 3 min von Chat-Sitzung 66268d15… bearbeitet"** — der Anspruch steht,
+  wie lange, siehst du.
+- Nach **zehn Minuten ohne Ergebnis** wird die Zeile rot: **„⚠️ seit 12 min
+  beansprucht, kein Ergebnis"**. Das heißt nicht sicher, dass nichts passiert —
+  das Board kann in den Chat nicht hineinsehen. Es heißt: verlass dich nicht
+  darauf.
+- Dann erscheint der Knopf **„↩︎ zurück in die Warteschlange"**. Ein Klick nimmt
+  den Anspruch zurück und stellt das Ticket wieder an — die Warteschlange startet
+  es sofort als eigenen Agenten-Lauf. Läuft doch ein Agenten-Lauf, lehnt das Board
+  den Klick ab und sagt es dir.
+
+Früher stand auf so einer Karte schlicht „wird sichtbar in Chat-Session … 
+bearbeitet". Das war eine Behauptung, die das Board nicht prüfen konnte.
+
 Klick die Karte an, und du siehst die vollständige Session-Kennung und den
 Pfad zum Lauf-Protokoll.
 Nach dem Lauf bleibt die Kennung im Ticket gespeichert — du kannst also auch
@@ -312,10 +420,13 @@ kein Terminal:
 Öffne am Handy **http://192.168.x.x:8765/upload** — dieselbe Adresse
 wie fürs Board, nur mit `/upload` am Ende (dieselbe Anmeldung wie
 beim Board), wähle ein oder mehrere Bilder aus und tippe „Hochladen". Sie
-landen im Ordner `docs/images/` deiner Werkbank, und der Assistent kann sie
+landen im **privaten** Ordner `uploads/` deiner Werkbank — der wird weder in
+git gesichert noch jemals mitveröffentlicht — und der Assistent kann sie
 danach verwenden — praktisch für Screenshots, die ins Handbuch oder in einen
-Fehlerbericht sollen. Angenommen werden nur echte Bilder (bis 15 MB); die
-Dateinamen werden automatisch entschärft.
+Fehlerbericht sollen. Soll ein Bild dauerhaft ins Repo (z. B. ein
+README-Screenshot), verschiebt es der Assistent bewusst und benennt es bei der
+Veröffentlichung ausdrücklich als erlaubt. Angenommen werden nur echte Bilder
+(bis 15 MB); die Dateinamen werden automatisch entschärft.
 
 ## Wenn das Claude-Kontingent aufgebraucht ist
 

@@ -6,3 +6,5 @@ state.json
 tickets/.lock
 config.json
 dist/
+uploads/
+tickets/.dispatcher.lock

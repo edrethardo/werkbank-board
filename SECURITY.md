@@ -8,8 +8,12 @@ and is off unless you turn it on (`--lan-on`).
 
 - The board's HTTP handlers (`src/werkbank/`): auth bypass, CSRF/DNS-rebinding,
   path traversal, RCE via ticket content, log/upload leakage.
-- The dispatcher: an attacker who reaches the board should not be able to
-  aim an agent at a folder outside the configured project list.
+- The dispatcher: nobody should be able to reach the board in the first place
+  who is not supposed to. Note what is NOT promised — a ticket's `project` may
+  name any absolute path, and the folder picker's confinement is convenience,
+  not containment. Whoever can create or move a ticket can already run commands
+  as you; that is the design, and the boundary being defended is the one around
+  the board itself.
 - The published skills (`.claude/skills/_user-level/`): they run in other
   projects' Claude Code sessions, so a broken skill is a real vulnerability.
 
@@ -25,10 +29,14 @@ and is off unless you turn it on (`--lan-on`).
 
 ## Reporting
 
-Please report privately to **[contact removed — please open an issue]** (subject starts with
-`werkbank security:`). Expect a reply within a week; a fix lands when it
-lands. **No bounty** — this is a personal tool released for others to look at
-and reuse, not a funded project.
+Please **open an issue** in this repository and start the title with
+`security:`. Expect a reply within a week; a fix lands when it lands.
+**No bounty** — this is a personal tool released for others to look at and
+reuse, not a funded project.
+
+If a finding is severe enough that a public issue would put users at risk
+before a fix exists, say so in one sentence without the details and wait for
+a reply.
 
 If you want to demonstrate a finding safely, you can point the board at an
 empty tickets directory and use the tests under `tests/test_security.py` as

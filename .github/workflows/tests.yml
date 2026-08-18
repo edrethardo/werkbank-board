@@ -1,7 +1,9 @@
-# WB-56: run the unittest suite on both Linux and Windows on every push and
-# pull request. Windows is the point of this workflow — the maintainer has no
-# Windows machine, so this is where the "should work on Windows" claim in the
-# README either becomes true or gets exposed.
+# WB-56 / WB-184: run the unittest suite on Linux, Windows AND macOS on every
+# push and pull request. The maintainer has only a Linux machine, so this is
+# where every "runs on X" claim in the README either becomes true or gets
+# exposed. macOS matters beyond politeness: it is POSIX but NOT Linux — no
+# /proc, different temp paths, a different default filesystem — so it catches
+# the Linux-isms that a Unix/Windows split alone leaves invisible.
 #
 # `-v` matters: several tests skip themselves on Windows (e.g. dispatch tests
 # that use POSIX shell scripts as claude stand-ins) and we want that visible in
@@ -18,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false  # a Windows failure must not hide a Linux failure
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,3 +29,12 @@ jobs:
           python-version: "3.10"
       - name: Run unittest suite (verbose, so skipped tests are visible)
         run: python -m unittest discover -s tests -v
+      # `scripts/` is deliberately NOT part of the public copy (it contains the
+      # publisher, which must name what it scrubs). Without this guard the
+      # published repo would go red on its first push — for the maintainer and
+      # for anyone who forks it. Found by two adversarial reviews at once.
+      - name: Fresh-machine test (maintainer repo only, Linux only)
+        if: matrix.os == 'ubuntu-latest' && hashFiles('scripts/release-smoke.py') != ''
+        run: |
+          python scripts/publish-clean-copy.py --allow-dirty --out dist/ci-copy
+          python scripts/release-smoke.py --copy dist/ci-copy

@@ -15,9 +15,15 @@ An unindexed document is a bug (see the `documenting` skill). Read this index an
 
 - 2026-08-14 — [Was ist die Werkbank?](user/about.md) — docs — Zweck des Tools in Kurzform: ein Ticket-System für Claude-Code-Agenten.
 - 2026-08-15 — [Das Board und die Tickets benutzen](user/board-und-tickets.md) — docs, feature — Wie man das Kanban-Board öffnet, Tickets anlegt und sie von Agenten abarbeiten lässt; Einrichtung per „init".
+- 2026-08-17 — [opencode-Beispiel — vom Anlegen bis zum grünen Gate](user/opencode-beispiel.md) — docs, feature — Ein durchgespieltes Beispiel: einen kleinen Bugfix an das lokale Modell (opencode) geben, mit einer Prüfung als Abnahmekriterium. Ende zu Ende — von der `config.json` bis zur grünen Karte.
 
 ## Developer documentation (docs/dev/)
 
+- 2026-08-17 — [Release testing](dev/release-testing.md) — setup, decision — The fresh-machine check before every public release: frozen worktree, sandboxed smoke test of the README's own steps, both CI jobs; what it has caught and what it still does not cover.
+
+- 2026-08-16 — [WB-166 — proposed patch for the create-ticket skill (opencode needs a gate at creation)](dev/wb166-create-ticket-skill-patch.md) — decision, docs — The create-ticket skill's current snippet forwards neither `assignee=` nor `gate=`, so an opencode recommendation silently becomes a claude ticket; carries the exact v6 replacement (adds §1a "Gate for opencode — resolve it BEFORE creating") for the user to apply — dispatched runs cannot write to `.claude/skills/`.
+- 2026-08-16 — [Windows release plan (WB-160)](dev/windows-release-plan.md) — decision, docs — **RESOLVED 2026-08-17 (WB-182): option 2 taken, Windows CI is green.** The record of how it looked when every push was red, and the categories of breakage that had to close.
+- 2026-08-16 — [Benchmark — opencode lane vs a forked Claude run](dev/benchmarks/README.md) — investigation, decision — Measured three real tickets: local lane ~96 % cheaper, 3–8× slower, and it did not finish the hardest one inside its hour.
 - 2026-08-16 — [Releasing the public copy](dev/release-sync.md) — decision, setup — Why the export drops the journal while the sync preserves the published sample, why the publisher never ships, and the checks-that-exempt-themselves pattern.
 
 - 2026-08-16 — [opencode dispatch — the named check is the acceptance criterion](dev/opencode-gate-dispatch.md) — decision — Why an opencode ticket is accepted only on a configured check, and why the ticket names the check instead of carrying the command.

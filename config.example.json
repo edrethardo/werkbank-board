@@ -12,5 +12,17 @@
     "/pfad/zu/deinem/projekt": true
   },
   "lan": false,
-  "password_hash": ""
+  "password_hash": "",
+  "assignee_router": {
+    "claude": [
+      "sicherheit",
+      "release",
+      "refactor"
+    ],
+    "opencode": [
+      "test",
+      "doku",
+      "skript"
+    ]
+  }
 }

@@ -4,6 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stubs import temp_dir, remove_tree
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from werkbank import store
@@ -15,7 +18,7 @@ title: Fix the frobnicator
 type: aufgabe
 status: offen
 assignee: claude
-project: /home/USER/code/agent_ticket
+project: /pfad/zur/werkbank
 priority: hoch
 nach:
 nicht_mit:
@@ -29,6 +32,17 @@ handover_at:
 handover_expired:
 limit_until:
 pid:
+answer:
+tokens_in:
+tokens_out:
+tokens_cache:
+cost_usd:
+duration_s:
+queue_pos:
+epic:
+interactive: nein
+review_cost_usd:
+claimed_at:
 created: 2026-08-14
 updated: 2026-08-14
 ---
@@ -58,6 +72,22 @@ class ParseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.parse_ticket("no frontmatter here")
 
+    def test_parse_rejects_missing_required_frontmatter_fields(self):
+        # WB-109 P6: the "Pflichtfelder fehlen" branch had no coverage — a
+        # frontmatter block missing `id` or `title` was left to slip through
+        # if the raise ever went away. Pin the message so the wording stays
+        # the one the board's error banner tests look for.
+        for text, missing in (
+            ("---\ntitle: nur ein Titel\n---\n\nX\n", "id"),
+            ("---\nid: WB-9\n---\n\nX\n", "title"),
+            ("---\nstatus: offen\n---\n\nX\n", "id"),      # both missing → id named first
+        ):
+            with self.assertRaises(ValueError) as cm:
+                store.parse_ticket(text)
+            msg = str(cm.exception)
+            self.assertIn("Pflichtfelder fehlen", msg)
+            self.assertIn(missing, msg)
+
     def test_legacy_ticket_without_type_defaults_to_aufgabe(self):
         legacy = SAMPLE.replace("type: aufgabe\n", "")
         t = store.parse_ticket(legacy)
@@ -68,10 +98,10 @@ class ParseTest(unittest.TestCase):
 
 class DirTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_create_assigns_sequential_ids(self):
         t1 = store.create_ticket(self.dir, title="Erstes Ticket", description="A")
@@ -103,8 +133,9 @@ class DirTest(unittest.TestCase):
         store.update_ticket(self.dir, t.id, {"type": "bug"})
         loaded = {x.id: x for x in store.load_tickets(self.dir)}
         self.assertEqual(loaded[t.id].type, "bug")
+        # WB-161 added `epic` to TYPES; pick a value that stays unknown.
         with self.assertRaises(ValueError):
-            store.update_ticket(self.dir, t.id, {"type": "epic"})
+            store.update_ticket(self.dir, t.id, {"type": "story"})
 
     def test_load_tickets_sorted_by_id(self):
         for title in ["a", "b", "c"]:
@@ -259,6 +290,65 @@ class DirTest(unittest.TestCase):
         self.assertIn("Alles erledigt, geprüft.", body)
         self.assertNotIn("_(noch offen)_", body)
 
+    def test_wb138_move_queued_up_swaps_effective_positions(self):
+        """The user's ↑ button walks a queued ticket one place forward inside
+        the same priority. Two peers with no explicit queue_pos fall back to
+        their ticket numbers; after move_up the later one comes first."""
+        a = store.create_ticket(self.dir, title="Erster", description="")
+        b = store.create_ticket(self.dir, title="Zweiter", description="")
+        for t in (a, b):
+            store.update_ticket(self.dir, t.id, {"status": "zu_bearbeiten"})
+        # Precondition: A comes first (lower ticket number).
+        peers = sorted(store.load_tickets(self.dir),
+                       key=lambda x: store.effective_queue_pos(x))
+        self.assertEqual([x.id for x in peers], [a.id, b.id])
+        store.move_queued_up(self.dir, b.id)
+        peers = sorted(store.load_tickets(self.dir),
+                       key=lambda x: store.effective_queue_pos(x))
+        self.assertEqual([x.id for x in peers], [b.id, a.id])
+
+    def test_wb138_move_up_on_top_ticket_is_a_noop(self):
+        a = store.create_ticket(self.dir, title="Oben", description="")
+        store.update_ticket(self.dir, a.id, {"status": "zu_bearbeiten"})
+        # Should not raise; positions stay where they were.
+        store.move_queued_up(self.dir, a.id)
+        got = {x.id: x for x in store.load_tickets(self.dir)}[a.id]
+        self.assertEqual(got.status, "zu_bearbeiten")
+
+    def test_wb138_move_up_refuses_ticket_not_in_queue(self):
+        a = store.create_ticket(self.dir, title="Offen", description="")
+        with self.assertRaises(ValueError):
+            store.move_queued_up(self.dir, a.id)
+
+    def test_wb140_append_review_note_adds_section_and_stacks(self):
+        """WB-140: reviewer report is appended as `## Review-Bot (…)` and
+        multiple runs accumulate. Existing Beschreibung/Ergebnis stay."""
+        t = store.create_ticket(self.dir, title="X", description="Aufgabe")
+        store.append_review_note(self.dir, t.id, "Erster Befund.")
+        store.append_review_note(self.dir, t.id, "Zweiter Befund.")
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.body.count("## Review-Bot ("), 2)
+        self.assertIn("Erster Befund.", loaded.body)
+        self.assertIn("Zweiter Befund.", loaded.body)
+        self.assertIn("Aufgabe", loaded.body)   # Beschreibung untouched
+        self.assertIn("## Ergebnis", loaded.body)
+
+    def test_wb138_move_up_stays_inside_priority(self):
+        """Priority is the strongest sort key; move_up must not lift a normal
+        ticket above a hoch ticket by swapping across the boundary."""
+        hi = store.create_ticket(self.dir, title="Hoch", description="",
+                                 priority="hoch")
+        lo = store.create_ticket(self.dir, title="Normal", description="")
+        for t in (hi, lo):
+            store.update_ticket(self.dir, t.id, {"status": "zu_bearbeiten"})
+        # Moving the normal ticket up when its only peer is a hoch ticket is
+        # a no-op (peers list is empty for its priority above it).
+        store.move_queued_up(self.dir, lo.id)
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}
+        # queue_pos for lo may have been touched, but hi's priority still
+        # trumps in the dispatcher's sort — so effective ordering unchanged.
+        self.assertEqual(loaded[hi.id].priority, "hoch")
+
     def test_update_body(self):
         t = store.create_ticket(self.dir, title="X", description="alt")
         store.update_ticket(self.dir, t.id, {"body": "## Beschreibung\n\nneu\n"})
@@ -274,11 +364,11 @@ class ConcurrentWriteTest(unittest.TestCase):
     """WB-9: concurrent saves must never silently lose a change."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self.t = store.create_ticket(self.dir, title="Wettlauf", description="Basis")
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def _load(self):
         return {x.id: x for x in store.load_tickets(self.dir)}[self.t.id]
@@ -341,7 +431,7 @@ class CrossProcessLockTest(unittest.TestCase):
 
     def test_two_processes_hammering_lose_no_bumps(self):
         import subprocess
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         try:
             t = store.create_ticket(d, title="Prozessrennen", description="")
             src = Path(__file__).resolve().parent.parent / "src"
@@ -356,12 +446,12 @@ class CrossProcessLockTest(unittest.TestCase):
             after = {x.id: x for x in store.load_tickets(d)}[t.id]
             self.assertEqual(int(after.version), 1 + 30)
         finally:
-            shutil.rmtree(d)
+            remove_tree(d)
 
 
 class SessionFieldTest(unittest.TestCase):
     def test_session_field_roundtrip_and_update(self):
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         try:
             t = store.create_ticket(d, title="S", description="")
             self.assertEqual(t.session, "")
@@ -369,15 +459,15 @@ class SessionFieldTest(unittest.TestCase):
             after = {x.id: x for x in store.load_tickets(d)}[t.id]
             self.assertEqual(after.session, "abc-123")
         finally:
-            shutil.rmtree(d)
+            remove_tree(d)
 
 
 class DeleteTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_delete_removes_file_and_listing(self):
         t = store.create_ticket(self.dir, title="Weg damit", description="")
@@ -398,7 +488,7 @@ class AtomicWriteTest(unittest.TestCase):
 
     def test_reader_never_sees_partial_files(self):
         import threading
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir()
         try:
             t = store.create_ticket(d, title="Hammer", description="X" * 60000)
             errors, stop = [], threading.Event()
@@ -413,7 +503,7 @@ class AtomicWriteTest(unittest.TestCase):
             stop.set(); rt.join()
             self.assertEqual(errors, [])
         finally:
-            shutil.rmtree(d)
+            remove_tree(d)
 
 
 class BugForTicketTest(unittest.TestCase):
@@ -421,7 +511,7 @@ class BugForTicketTest(unittest.TestCase):
     context, so the agent fixing it does not start from zero."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self.orig = store.create_ticket(self.dir, title="Dunkles Design",
                                         description="Board soll dunkel sein.",
                                         project="/projekt")
@@ -430,7 +520,7 @@ class BugForTicketTest(unittest.TestCase):
         store.update_ticket(self.dir, self.orig.id, {"status": "erledigt"})
 
     def tearDown(self):
-        shutil.rmtree(self.dir, ignore_errors=True)
+        remove_tree(self.dir)
 
     def test_bug_references_the_original_and_its_result(self):
         bug = store.create_bug_for(self.dir, self.orig.id,
@@ -456,3 +546,70 @@ class BugForTicketTest(unittest.TestCase):
     def test_unknown_ticket_refused(self):
         with self.assertRaises(KeyError):
             store.create_bug_for(self.dir, "WB-999", "kaputt")
+
+
+class Wb197OpencodeTicketShapeTest(unittest.TestCase):
+    """WB-197: opencode is a small local model. A vague ticket does not make it
+    ask — it makes it guess, fail the check twice and escalate to Claude, which
+    costs more than writing the ticket properly would have. A ticket for the
+    local lane must therefore carry numbered steps, the commands that prove the
+    work, a done-list, and the gate that makes the board enforce all of it."""
+
+    def _ticket(self, body, gate="Tests laufen durch"):
+        return store.Ticket(id="WB-1", title="T", assignee="opencode",
+                            gate=gate, body=body)
+
+    COMPLETE = """## Beschreibung
+
+1. Lege `src/foo.py` an, GENAU wie `src/bar.py` als Vorlage.
+2. Ergänze die Funktion `tue_was(pfad: str) -> int`.
+
+## Tests / Abnahme
+
+    python3 -m pytest tests/test_foo.py -q      # erwartet: 3 passed, exit 0
+
+## Fertig, wenn
+
+[ ] `src/foo.py` existiert
+[ ] Tests grün
+
+## Ergebnis
+
+_(noch offen)_
+"""
+
+    def test_a_complete_ticket_has_no_gaps(self):
+        self.assertEqual(store.opencode_ticket_gaps(self._ticket(self.COMPLETE)), [])
+
+    def test_missing_test_section_is_flagged(self):
+        body = self.COMPLETE.replace("## Tests / Abnahme", "## Nebenbei")
+        gaps = store.opencode_ticket_gaps(self._ticket(body))
+        self.assertTrue(any("Tests / Abnahme" in g for g in gaps), gaps)
+
+    def test_missing_done_list_is_flagged(self):
+        body = self.COMPLETE.replace("## Fertig, wenn", "## Sonstiges")
+        gaps = store.opencode_ticket_gaps(self._ticket(body))
+        self.assertTrue(any("Fertig, wenn" in g for g in gaps), gaps)
+
+    def test_prose_without_numbered_steps_is_flagged(self):
+        body = self.COMPLETE.replace(
+            "1. Lege `src/foo.py` an, GENAU wie `src/bar.py` als Vorlage.\n"
+            "2. Ergänze die Funktion `tue_was(pfad: str) -> int`.",
+            "Bau das bitte irgendwie ein, du weißt schon wie.")
+        gaps = store.opencode_ticket_gaps(self._ticket(body))
+        self.assertTrue(any("nummerierte" in g for g in gaps), gaps)
+
+    def test_missing_gate_is_flagged_when_the_project_has_one(self):
+        gaps = store.opencode_ticket_gaps(self._ticket(self.COMPLETE, gate=""))
+        self.assertTrue(any("gate" in g for g in gaps), gaps)
+
+    def test_no_gate_configured_means_no_gate_complaint(self):
+        """A project without checks cannot be blamed for an empty gate field —
+        the ticket should say a gate is needed, not fail this structural test."""
+        gaps = store.opencode_ticket_gaps(self._ticket(self.COMPLETE, gate=""),
+                                          gates_configured=False)
+        self.assertEqual(gaps, [])
+
+    def test_it_reads_a_plain_string_too(self):
+        """So a skill can check the text it is about to send, before creating."""
+        self.assertTrue(store.opencode_ticket_gaps("Mach mal was", ))

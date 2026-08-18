@@ -1,14 +1,14 @@
 ---
 name: werkbank-pull-ticket
 description: Use when the user asks this session to pull or work its Werkbank ticket — "zieh dir ein Ticket", "hol dir dein Ticket", "hast du ein Ticket?", "arbeite dein Ticket ab" — find the open ticket for THIS project on the Werkbank board and work it.
-version: 8
+version: 9
 ---
 
 # Werkbank: Pull Your Ticket
 
 ## Path to the Werkbank — the ONLY line you adapt
 
-    WERKBANK=/home/USER/code/agent_ticket
+    WERKBANK=/pfad/zur/werkbank
 
 Every command below starts with that assignment, so the path exists exactly
 once. Never write the path into a Python string: `~` is expanded by the SHELL,
@@ -49,13 +49,31 @@ returns the ticket to `offen` with the user's answer recorded in the description
 
 ## 3. Claim and work
 
-    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 python3 - <<'EOF'
+    WERKBANK=/pfad/zur/werkbank WB=WB-42 python3 - <<'EOF'
     import os, sys
     sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
     from werkbank import store
-    store.update_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
-                        os.environ["WB"], {"status": "in_arbeit"})
+    store.claim_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
+                       os.environ["WB"], os.environ["CLAUDE_CODE_SESSION_ID"])
     EOF
+
+**Use `claim_ticket`, not a bare status write.** It sets status, your session id
+AND `claimed_at` in one go, and clears a handover marker. That timestamp is what
+stops the board from deciding your ticket is stranded: without it the board hands
+the ticket away and, five minutes later, drops it back into „Offen" while you are
+still working on it — the user sees a ticket that never moved (WB-181, measured:
+back in Offen after 200 s).
+
+**Claim when you START, not when you notice.** The claim is a promise to the
+user: the card turns "In Arbeit" and the board stops treating the ticket as
+available. If you claim and then finish something else first, the board shows
+work that is not happening — measured 2026-08-17 on WB-203, where a claimed
+ticket sat untouched for minutes while the session completed another one. The
+user saw it and did not believe the board, which is the correct reaction and a
+bug in how we behave, not in the board. If you must hold a handover before you
+can start (the marker expires), say so in the chat in one line, and start
+immediately after. Since WB-204 the card counts the minutes since `claimed_at`
+and calls out a claim that stands too long, so this now shows.
 
 - Werkbank-Ticket (project = the Werkbank checkout)? Follow the project-local
   skill `werkbank-work-ticket` (in `$WERKBANK/.claude/skills/`) — it is the
@@ -82,7 +100,7 @@ run THAT; never invent a command because the name sounds like one. If the name i
 not in `config.json`, the board would refuse to dispatch it — say so instead of
 guessing.
 
-    "gates": { "/home/USER/code/agent_ticket": { "Tests laufen durch": "python3 -m pytest tests/ -q" } }
+    "gates": { "/pfad/zur/werkbank": { "Tests laufen durch": "python3 -m pytest tests/ -q" } }
 
 Why the indirection: the board is reachable from the LAN, and a ticket is an
 executable prompt already. If a ticket field could carry a command, any request
@@ -114,15 +132,24 @@ attempt is not new information.
 ## 4. Report back
 
 Write a short, honest German summary — what was done, what was verified, what
-failed or stayed open — and move the ticket to review:
+failed or stayed open — and move the ticket to review.
 
-    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 \
+**Use `append_result`, never `set_result`, on a ticket that may already carry
+somebody else's text (WB-231).** `set_result` REPLACES the whole `## Ergebnis`
+section — silently: no merge, no version check, no warning. Measured 2026-08-18:
+one write deleted a peer session's 49-line review, another a 73-line report;
+both were found only through `git diff`. `append_result` reads and writes under
+the SAME store lock, so two sessions finishing at once cannot lose each other's
+report — a hand-rolled read-then-append has exactly that race. An empty result
+(or the `_(noch offen)_` placeholder) is replaced, not decorated.
+
+    WERKBANK=/pfad/zur/werkbank WB=WB-42 \
     ERGEBNIS="Kurz, ehrlich, auf Deutsch." python3 - <<'EOF'
     import os, sys
     sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
     from werkbank import dispatch, store
     tickets = os.path.join(os.environ["WERKBANK"], "tickets")
-    store.set_result(tickets, os.environ["WB"], os.environ["ERGEBNIS"])
+    store.append_result(tickets, os.environ["WB"], os.environ["ERGEBNIS"])
     store.update_ticket(tickets, os.environ["WB"], {"status": "review"})
     # Register THIS session so the next board drag reaches this chat (WB-19/22).
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -153,7 +180,7 @@ ask why nothing happens (this happened three times in this project).
 
 Start it (Bash, run_in_background):
 
-    WERKBANK=/home/USER/code/agent_ticket
+    WERKBANK=/pfad/zur/werkbank
     end=$((SECONDS+7200)); while [ $SECONDS -lt $end ]; do
       f=$(grep -l "^handover: $CLAUDE_CODE_SESSION_ID" "$WERKBANK"/tickets/*.md 2>/dev/null | head -1)
       [ -n "$f" ] && { echo "HANDOVER:$f"; exit 0; }; sleep 5
@@ -162,7 +189,7 @@ Start it (Bash, run_in_background):
 When it exits with HANDOVER:<file>, CLAIM IMMEDIATELY (deadline ~5 min, then a
 background run takes over):
 
-    WERKBANK=/home/USER/code/agent_ticket WB=WB-42 python3 - <<'EOF'
+    WERKBANK=/pfad/zur/werkbank WB=WB-42 python3 - <<'EOF'
     import os, sys
     sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
     from werkbank import store

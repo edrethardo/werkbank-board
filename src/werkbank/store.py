@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -39,19 +40,37 @@ class ConflictError(ValueError):
     """A write based on a stale version — rejected instead of overwriting."""
 
 # zu_bearbeiten (WB-40) is the queue: the board pulls the next one by itself.
-STATUSES = ["offen", "zu_bearbeiten", "in_arbeit", "review", "fehlgeschlagen",
-            "erledigt"]
+# rueckfrage (WB-123): the run paused with a question for the user; its lane
+# is free so other tickets keep moving. An answer via the board flips this
+# back to in_arbeit and resumes the same session.
+STATUSES = ["offen", "zu_bearbeiten", "in_arbeit", "rueckfrage",
+            "review", "fehlgeschlagen", "erledigt"]
 PRIORITIES = ["hoch", "normal", "niedrig"]
-TYPES = ["aufgabe", "bug"]
+# WB-161: `epic` is a planning ticket — worked interactively in the target
+# project's chat, its "work" is writing child tickets (each carries
+# `epic: WB-<parent>` in its frontmatter, see KEYS below).
+TYPES = ["aufgabe", "bug", "epic"]
 
 # Frontmatter keys, in the order they are written to disk. Older ticket files
 # may lack `type`, `nach` or `nicht_mit`; parsing falls back to the dataclass
 # defaults. `nach`/`nicht_mit` are comma lists of ticket ids (WB-12).
+# WB-161: `epic` on a child ticket names its parent epic id — empty on the
+# epic itself and on any ticket that is not part of one.
+# WB-168: `interactive: ja` forces the dispatch to prefer a chat session
+# and bounce back to Offen when none is registered (same semantics as an
+# epic, opted in per ticket for non-epic types).
+# WB-170: `review_cost_usd` is the cumulative $ spent by the on-demand
+# Review-Bot on this ticket (multiple clicks add up); empty = never
+# reviewed OR the CLI returned non-JSON that one time.
 KEYS = ["id", "title", "type", "status", "assignee", "project", "priority",
         "nach", "nicht_mit", "fork", "gate", "review", "version", "session",
         "handover", "handover_at", "handover_expired", "limit_until", "pid",
+        "answer", "tokens_in", "tokens_out", "tokens_cache", "cost_usd",
+        "duration_s", "queue_pos", "epic", "interactive", "review_cost_usd",
+        "claimed_at",
         "created", "updated"]
 FORK_VALUES = ["ja", "nein"]
+INTERACTIVE_VALUES = ["ja", "nein"]
 # A gate NAME, never a command: no shell metacharacters can survive this.
 GATE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
 
@@ -81,6 +100,38 @@ class Ticket:
     handover_expired: str = ""  # "ja" once a handover went unclaimed (WB-68)
     limit_until: str = ""       # unix time the run pauses on quota (WB-69)
     pid: str = ""               # OS pid of the live claude process — kills orphans (WB-75)
+    answer: str = ""            # user reply to a rueckfrage — consumed on next dispatch (WB-123)
+    # WB-137: what the run actually cost — captured from the CLI's result event.
+    # All strings (frontmatter is flat), empty = not measured. Only claude runs
+    # report cost; opencode reports tokens but no cost (local model).
+    tokens_in: str = ""         # input_tokens from the result event
+    tokens_out: str = ""        # output_tokens
+    tokens_cache: str = ""      # cache_creation + cache_read (both count against quota differently)
+    cost_usd: str = ""          # total_cost_usd (claude only)
+    # WB-139: wall-clock of the LAST attempt in whole seconds. Includes what
+    # the agent does (tool calls, gate, docs, journal) but NOT the wait in the
+    # queue or a quota pause — a paused run starts a fresh attempt whose time
+    # overwrites this, so benchmarks see actual work, not a 4-hour pause.
+    duration_s: str = ""
+    # WB-138: manual queue rank inside a priority. Empty = fall back to the
+    # ticket number (historical order). Move-up swaps this with the peer above
+    # so the user can walk a ticket forward one click at a time without
+    # touching the priority.
+    queue_pos: str = ""
+    # WB-161: parent epic id on child tickets ("WB-N"), empty otherwise.
+    epic: str = ""
+    # WB-168: "ja" forces dispatch to prefer a chat session — bounces back
+    # to Offen (with instructions) when no interactive lineage is registered
+    # for the project, instead of falling through to a background run.
+    interactive: str = "nein"
+    # WB-170: cumulative $ the on-demand Review-Bot has spent on this ticket.
+    # String because the frontmatter is flat text; formatted to 4 decimals
+    # by append_review_note, empty until the first successful (JSON) review.
+    review_cost_usd: str = ""
+    # WB-181: unix time a CHAT session claimed this ticket. The board must not
+    # treat a ticket somebody is visibly working on as stranded — and the proof
+    # of that claim belongs in the ticket, not in a side file that can drift.
+    claimed_at: str = ""
     created: str = ""
     updated: str = ""
     body: str = ""
@@ -142,21 +193,32 @@ def normalize_links(value: str) -> str:
 STATUS_LABEL = {
     "offen": "noch offen", "zu_bearbeiten": "in der Warteschlange",
     "in_arbeit": "in Arbeit",
+    "rueckfrage": "wartet auf deine Antwort",
     "review": "in Review, noch nicht abgenommen",
     "fehlgeschlagen": "fehlgeschlagen", "erledigt": "erledigt",
 }
 
 
-def blocking_reasons(all_tickets, t, include_exclusion: bool = True) -> list:
+def blocking_reasons(all_tickets, t, include_exclusion: bool = True,
+                     review_ok_projects=None) -> list:
     """German reasons why `t` may not start now. References to unknown ids never
     block. Exclusion can be skipped: the dispatcher runs strictly one at a time,
-    so at run time only the `nach` order can still be violated."""
+    so at run time only the `nach` order can still be violated.
+
+    WB-136: a blocker in `review` for a project the user marked as
+    `nonblocking_review` counts as done for the queue — from the agent's
+    perspective the work is finished; only the user's acceptance is pending,
+    and the user chose that this shouldn't hold anything back."""
+    review_ok_projects = review_ok_projects or set()
     by_id = {x.id: x for x in all_tickets}
     reasons = []
     for lid in link_ids(t.nach):
         other = by_id.get(lid)
-        if other and other.status != "erledigt":
-            reasons.append(f"wartet auf {lid} ({STATUS_LABEL[other.status]})")
+        if not other or other.status == "erledigt":
+            continue
+        if other.status == "review" and (other.project or "") in review_ok_projects:
+            continue
+        reasons.append(f"wartet auf {lid} ({STATUS_LABEL[other.status]})")
     if include_exclusion:
         conflicting = set()
         for lid in link_ids(t.nicht_mit):
@@ -209,13 +271,104 @@ def _paths(tickets_dir) -> list:
                   if not p.is_symlink())
 
 
+def _read_with_retry(path, attempts: int = 5, pause: float = 0.05) -> str:
+    """Read a ticket, tolerating the instant a writer is replacing it.
+
+    Writes are atomic (`os.replace` onto a fully written temp file), so a
+    reader never sees half a ticket. On Windows it can, however, meet the
+    replace itself: opening a file that is being swapped raises
+    PermissionError. Retrying briefly turns that into the non-event it is —
+    without it the board reports a perfectly healthy ticket as broken."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError as e:      # Windows: file busy during replace
+            last = e
+            time.sleep(pause)
+    raise last
+
+
+OPENCODE_SECTIONS = ("## Tests / Abnahme", "## Fertig, wenn")
+
+
+def opencode_ticket_gaps(ticket, gates_configured: bool = True) -> list:
+    """What a ticket still lacks before a LOCAL model can work it (WB-197).
+
+    opencode is a small model. It does not fill gaps, it guesses — and a guess
+    that fails the check twice escalates to Claude, which costs more than
+    writing the ticket properly would have. So a ticket for the local lane has
+    to carry its own instructions: numbered steps decided in advance, the exact
+    commands that prove the work, a tick-list for "done", and the gate that
+    makes the board enforce it.
+
+    Returns plain German gaps, empty when the ticket is ready. It judges the
+    TEXT, not the model — no check can tell a precise step from a vague one,
+    so this catches the structural omissions and leaves the judgement to whoever
+    writes the ticket."""
+    body = getattr(ticket, "body", None)
+    if body is None:
+        body = str(ticket)
+    gaps = []
+    for heading in OPENCODE_SECTIONS:
+        if heading.lower() not in body.lower():
+            gaps.append(f"Abschnitt „{heading}“ fehlt")
+    description = body.split("## Ergebnis")[0]
+    if not re.search(r"^\s*\d+[.)]\s+\S", description, re.M):
+        gaps.append("keine nummerierten Schritte — ein kleines Modell braucht "
+                    "eine Reihenfolge, keine Absicht")
+    if gates_configured and not (getattr(ticket, "gate", "") or "").strip():
+        gaps.append("kein `gate:` gesetzt — ohne Prüfung startet das Board das "
+                    "Ticket gar nicht")
+    return gaps
+
+
+def claim_ticket(tickets_dir, ticket_id: str, session_id: str):
+    """A CHAT session takes this ticket: in_arbeit, its own session id, and the
+    timestamp that tells the board somebody is on it (WB-181).
+
+    One call, because three separate fields are three chances to forget one —
+    and the field that got forgotten was exactly the one that kept the board
+    from taking the ticket back mid-work. Also clears a handover marker: if the
+    ticket was handed over, claiming IS the answer to it."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("session_id fehlt — ohne Session kein Anspruch "
+                         "(nie raten; $CLAUDE_CODE_SESSION_ID benutzen)")
+    return update_ticket(tickets_dir, ticket_id, {
+        "status": "in_arbeit",
+        "session": session_id.strip(),
+        "claimed_at": str(int(time.time())),
+        "handover": "",
+        "handover_at": "",
+    })
+
+
+def release_claim(tickets_dir, ticket_id: str):
+    """WB-204: give a stalled chat claim back to the queue. Undoes exactly what
+    `claim_ticket` did — status, session and the claim stamp — so the next run
+    starts clean instead of resuming a session that has moved on.
+
+    Only from `in_arbeit`: releasing anything else would silently requeue work
+    that is genuinely under way, and the caller (the board) must first make
+    sure no board run holds the ticket."""
+    t = next((x for x in load_tickets(tickets_dir) if x.id == ticket_id), None)
+    if t is None:
+        raise KeyError(f"no ticket {ticket_id}")
+    if t.status != "in_arbeit":
+        raise ValueError("Nur Tickets in „In Arbeit“ lassen sich zurücklegen.")
+    return update_ticket(tickets_dir, ticket_id, {
+        "status": "zu_bearbeiten", "session": "", "claimed_at": "",
+        "handover": "", "handover_at": "",
+    })
+
+
 def load_tickets_with_errors(tickets_dir):
     """A broken file must only affect itself (WB-8): readable tickets are
     returned normally, unreadable files land in the error list."""
     tickets, errors = [], []
     for p in _paths(tickets_dir):
         try:
-            tickets.append(parse_ticket(p.read_text(encoding="utf-8")))
+            tickets.append(parse_ticket(_read_with_retry(p)))
         except (ValueError, OSError, UnicodeDecodeError) as e:
             errors.append({"file": p.name, "error": str(e)})
     tickets.sort(key=lambda t: _ticket_number(t.id))
@@ -243,7 +396,8 @@ def _find_path(tickets_dir, ticket_id: str) -> Path:
 def create_ticket(tickets_dir, title: str, description: str, assignee: str = "claude",
                   project: str = "", priority: str = "normal",
                   type: str = "aufgabe", nach: str = "", nicht_mit: str = "",
-                  fork: str = "nein", gate: str = "") -> Ticket:
+                  fork: str = "nein", gate: str = "", epic: str = "",
+                  interactive: str = "nein") -> Ticket:
     tickets_dir = Path(tickets_dir)
     tickets_dir.mkdir(parents=True, exist_ok=True)
     if priority not in PRIORITIES:
@@ -253,11 +407,14 @@ def create_ticket(tickets_dir, title: str, description: str, assignee: str = "cl
     nach, nicht_mit = normalize_links(nach), normalize_links(nicht_mit)
     if fork not in FORK_VALUES:
         raise ValueError(f"fork must be one of {FORK_VALUES}")
+    if interactive not in INTERACTIVE_VALUES:
+        raise ValueError(f"interactive must be one of {INTERACTIVE_VALUES}")
     if not is_gate_name(gate):
         raise ValueError("gate must be a plain check name")
     with _locked(tickets_dir):
         return _create_locked(tickets_dir, title, description, assignee, project,
-                              priority, type, nach, nicht_mit, fork, gate)
+                              priority, type, nach, nicht_mit, fork, gate, epic,
+                              interactive)
 
 
 def _read_highest_counter(tickets_dir) -> int:
@@ -273,7 +430,8 @@ def _read_highest_counter(tickets_dir) -> int:
 
 
 def _create_locked(tickets_dir, title, description, assignee, project, priority,
-                   type, nach, nicht_mit, fork, gate="") -> Ticket:
+                   type, nach, nicht_mit, fork, gate="", epic="",
+                   interactive="nein") -> Ticket:
     nums = [_ticket_number(parse_ticket(p.read_text(encoding="utf-8")).id)
             for p in _paths(tickets_dir)]
     next_num = max(max(nums, default=0), _read_highest_counter(tickets_dir)) + 1
@@ -286,6 +444,8 @@ def _create_locked(tickets_dir, title, description, assignee, project, priority,
         nicht_mit=nicht_mit,
         fork=fork,
         gate=gate,
+        epic=epic,
+        interactive=interactive,
         assignee=assignee.strip() or "claude",
         project=project,
         priority=priority,
@@ -346,6 +506,169 @@ def set_result(tickets_dir, ticket_id: str, result: str) -> Ticket:
         return _update_locked(tickets_dir, ticket_id, {"body": body})
 
 
+PLACEHOLDER_RESULT = "_(noch offen)_"
+
+
+def append_result(tickets_dir, ticket_id: str, result: str,
+                  heading: str = "") -> Ticket:
+    """WB-231: add to the `## Ergebnis` section instead of replacing it.
+
+    `set_result` replaces — correct for the board form, which shows the user
+    what they are overwriting, and wrong for everyone else. Two sessions and a
+    dispatched run now write the same board, and a replacing write is SILENT:
+    no error, no warning, the other report is simply gone. Measured 2026-08-18:
+    one write deleted a peer session's 49-line review, another a 73-line
+    report. Both were only noticed through `git diff`.
+
+    Read and append happen under the SAME lock, so two writers cannot both
+    read the old text and each write their own on top — the read-then-write a
+    caller does by hand has exactly that race, which is why this is a store
+    function and not a rule in a skill.
+
+    An empty result (or the `_(noch offen)_` placeholder the ticket template
+    carries) is replaced outright: separating a report from nothing would only
+    add noise."""
+    with _locked(tickets_dir):
+        path = _find_path(tickets_dir, ticket_id)
+        t = parse_ticket(path.read_text(encoding="utf-8"))
+        m = re.match(r"(## Beschreibung\n[\s\S]*?)\n*## Ergebnis\n([\s\S]*)", t.body)
+        head = m.group(1).rstrip() if m else t.body.rstrip()
+        previous = (m.group(2).strip() if m else "")
+        if previous == PLACEHOLDER_RESULT:
+            previous = ""
+        block = result.strip()
+        if heading:
+            block = f"## {heading.strip()}\n\n{block}"
+        combined = f"{previous}\n\n{block}".strip() if previous else block
+        body = f"{head}\n\n## Ergebnis\n\n{combined}\n"
+        return _update_locked(tickets_dir, ticket_id, {"body": body})
+
+
+def effective_queue_pos(t) -> int:
+    """WB-138: how the queue sees this ticket. Explicit `queue_pos` wins;
+    otherwise fall back to the ticket number so tickets that never got
+    moved keep their historical order."""
+    try:
+        return int(t.queue_pos)
+    except (TypeError, ValueError):
+        return _ticket_number(t.id)
+
+
+def append_review_note(tickets_dir, ticket_id: str, note: str,
+                       usage: dict = None) -> "Ticket":
+    """WB-140: append an adversarial-reviewer report to the ticket's body.
+    A `## Review-Bot (…)` heading is prepended so multiple reviews stack;
+    the existing `## Beschreibung` and `## Ergebnis` sections stay in place.
+    Under the store lock, so a note is atomic against user edits.
+
+    WB-170: when the caller passes `usage` (a dict as produced by
+    `opencode._parse_review_output`), we do two things atomically:
+    append a `_💰 $X.XX · N in / M out / K cache_` footer to the section
+    so a reader sees this run's cost, AND add `usage["cost_usd"]` into
+    the ticket's cumulative `review_cost_usd` frontmatter field so the
+    board can show the total across clicks."""
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    body = note.strip()
+    changes = {}
+    if isinstance(usage, dict):
+        cost = usage.get("cost_usd")
+        parts = []
+        if isinstance(cost, (int, float)):
+            parts.append(f"💰 ${cost:.4f}")
+        tin = int(usage.get("tokens_in") or 0)
+        tout = int(usage.get("tokens_out") or 0)
+        tcache = int(usage.get("tokens_cache") or 0)
+        if tin or tout or tcache:
+            parts.append(f"{tin} in / {tout} out / {tcache} cache")
+        if parts:
+            body = f"{body}\n\n_{' · '.join(parts)}_"
+    section = f"\n## Review-Bot ({stamp})\n\n{body}\n"
+    with _locked(tickets_dir):
+        path = _find_path(tickets_dir, ticket_id)
+        t = parse_ticket(path.read_text(encoding="utf-8"))
+        changes["body"] = t.body.rstrip() + "\n" + section
+        if isinstance(usage, dict) and isinstance(usage.get("cost_usd"), (int, float)):
+            prev = 0.0
+            try:
+                prev = float(t.review_cost_usd) if t.review_cost_usd else 0.0
+            except (TypeError, ValueError):
+                prev = 0.0
+            changes["review_cost_usd"] = f"{prev + float(usage['cost_usd']):.4f}"
+        return _update_locked(tickets_dir, ticket_id, changes)
+
+
+def move_queued_up(tickets_dir, ticket_id: str) -> "Ticket":
+    """Move a queued ticket one place forward in ITS lane. The peer is the
+    directly-preceding ticket with the same status, project AND priority —
+    priority stays the strongest sort key, the user only reorders within it.
+
+    Effective positions of the two tickets are swapped; queue_pos becomes
+    explicit on both, so a follow-up sort by (priority, effective_queue_pos)
+    honours the change. Idempotent on the top ticket."""
+    with _locked(tickets_dir):
+        all_ts = load_tickets(tickets_dir)
+        me = next((x for x in all_ts if x.id == ticket_id), None)
+        if me is None:
+            raise KeyError(f"no ticket {ticket_id}")
+        if me.status != "zu_bearbeiten":
+            raise ValueError("Nur Tickets in „Zu bearbeiten“ lassen sich verschieben.")
+        peers = [x for x in all_ts if x.status == "zu_bearbeiten"
+                 and x.project == me.project and x.priority == me.priority]
+        peers.sort(key=lambda x: (effective_queue_pos(x), _ticket_number(x.id)))
+        idx = next(i for i, x in enumerate(peers) if x.id == ticket_id)
+        if idx == 0:
+            return me                                # already at the top
+        above = peers[idx - 1]
+        my_pos = effective_queue_pos(me)
+        above_pos = effective_queue_pos(above)
+        # Two explicit writes; the flock we hold serialises them against any
+        # other writer, so a reader in between can see the intermediate state
+        # but never a lost update.
+        _update_locked(tickets_dir, above.id, {"queue_pos": str(my_pos)})
+        _update_locked(tickets_dir, ticket_id, {"queue_pos": str(above_pos)})
+        return next(x for x in load_tickets(tickets_dir) if x.id == ticket_id)
+
+
+def queue_peers(all_tickets, t) -> list:
+    """WB-203: the tickets `t` shares a queue position with — same status,
+    project and priority — in the order the dispatcher will take them.
+    Priority is the strongest key and stays untouched by manual ordering,
+    and each project has its own worker (WB-183), so a "lane" is exactly
+    this triple."""
+    peers = [x for x in all_tickets if x.status == "zu_bearbeiten"
+             and x.project == t.project and x.priority == t.priority]
+    peers.sort(key=lambda x: (effective_queue_pos(x), _ticket_number(x.id)))
+    return peers
+
+
+def move_queued_to(tickets_dir, ticket_id: str, index: int) -> "Ticket":
+    """WB-203: put a queued ticket at `index` inside its lane — what a drag
+    and drop means. `index` is clamped into the lane, so dropping above a
+    higher-priority ticket lands at the top of the OWN priority instead of
+    failing (the dispatcher sorts by priority first; the board says so).
+
+    The lane's existing effective positions are reused and handed out in the
+    new order, so the lane keeps its footprint relative to every other lane
+    and no renumbering leaks across projects or priorities."""
+    with _locked(tickets_dir):
+        all_ts = load_tickets(tickets_dir)
+        me = next((x for x in all_ts if x.id == ticket_id), None)
+        if me is None:
+            raise KeyError(f"no ticket {ticket_id}")
+        if me.status != "zu_bearbeiten":
+            raise ValueError("Nur Tickets in „Zu bearbeiten“ lassen sich verschieben.")
+        peers = queue_peers(all_ts, me)
+        slots = [effective_queue_pos(x) for x in peers]
+        order = [x for x in peers if x.id != ticket_id]
+        index = max(0, min(int(index), len(order)))
+        order.insert(index, me)
+        for slot, x in zip(slots, order):
+            if effective_queue_pos(x) != slot or not x.queue_pos:
+                _update_locked(tickets_dir, x.id, {"queue_pos": str(slot)})
+        return next(x for x in load_tickets(tickets_dir) if x.id == ticket_id)
+
+
 def update_ticket(tickets_dir, ticket_id: str, changes: dict,
                   expected_version=None) -> Ticket:
     """Apply a partial update. Allowed keys: title, status, assignee, project,
@@ -376,10 +699,24 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
     allowed = {"title", "type", "status", "assignee", "project", "priority",
                "nach", "nicht_mit", "fork", "gate", "review", "session",
                "handover", "handover_at", "handover_expired", "limit_until",
-               "pid", "body"}
+               "pid", "answer", "tokens_in", "tokens_out", "tokens_cache",
+               "cost_usd", "duration_s", "queue_pos", "epic", "interactive",
+               "claimed_at",
+               "review_cost_usd", "body"}
     unknown = set(changes) - allowed
     if unknown:
-        raise ValueError(f"cannot update keys: {sorted(unknown)}")
+        # WB-178: name the likely cause in German — the historical raw
+        # `cannot update keys: […]` bubbled up to the user verbatim and read
+        # like a stack trace. Nine out of ten times this fires because the
+        # running board is older than the browser tab that sent the request
+        # (a field the client already knows about is not yet in this
+        # server's `allowed` set); the other time it is a typo in a script.
+        names = ", ".join(sorted(unknown))
+        raise ValueError(
+            f"Unbekannte Felder: {names}. Meist heißt das, das laufende "
+            f"Board ist älter als das Ticket-Formular — starte das Board "
+            f"neu, dann kennt es die neuen Felder auch serverseitig. Sonst "
+            f"prüfe die Feldnamen auf Tippfehler.")
     if "status" in changes and changes["status"] not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
     for key in ("nach", "nicht_mit"):
@@ -391,6 +728,8 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
         raise ValueError(f"type must be one of {TYPES}")
     if "fork" in changes and changes["fork"] not in FORK_VALUES:
         raise ValueError(f"fork must be one of {FORK_VALUES}")
+    if "interactive" in changes and changes["interactive"] not in INTERACTIVE_VALUES:
+        raise ValueError(f"interactive must be one of {INTERACTIVE_VALUES}")
     if "review" in changes and changes["review"] not in ("", "ja", "nein"):
         raise ValueError("review must be '', 'ja' or 'nein'")
     if "gate" in changes and not is_gate_name(changes["gate"]):

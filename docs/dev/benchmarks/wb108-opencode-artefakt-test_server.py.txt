@@ -1,0 +1,183 @@
+"""WB-108: the HTTP handler as a composition, on a real ThreadingHTTPServer.
+
+The findings the audit measured: deleting the auth check in the handler, or
+widening the browse roots to /, left every existing test green — because no
+test ever built the handler. The traversal functions are well tested, but their
+BORDERS (which paths count as inside) come from here. So this file drives the
+real handler on a free port in LAN mode with a password:
+
+  - unauthenticated request -> 401
+  - wrong password -> 401, then correct password -> Set-Cookie -> 200
+  - /api/browse outside the roots -> 400
+  - core routes answer
+
+Everything runs inside one isolated tree (tickets, board.html, config.json,
+state dir); the real repo board is never touched. The client sends from a
+private address (192.168.1.42) so the tests run exactly the mode the ticket
+claims: a phone in the home network, LAN mode on.
+"""
+import http.client
+import json
+import os
+import shutil
+import sys
+import tempfile
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+from werkbank import auth, server  # noqa: E402
+
+
+HOST_HDR = "192.168.1.42:8765"  # the phone's Host to the board on port 8765
+
+
+class HandlerCompositionTest(unittest.TestCase):
+    PASSWORD = "richtig-pferd-batterie"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="wb108-"))
+        (self.dir / "state").mkdir()
+        (self.dir / "tickets").mkdir()
+        (self.dir / "board.html").write_text("<html>WB108-Board</html>", encoding="utf-8")
+        (self.dir / "upload.html").write_text("<html>upload</html>", encoding="utf-8")
+        (self.dir / "uploads").mkdir()
+        (self.dir / "config.json").write_text(json.dumps({
+            "port": 8765,
+            "default_project": str(self.dir),
+            "projects": {"Testprojekt": str(self.dir)},
+            "lan": True,
+            "password_hash": auth.hash_password(self.PASSWORD),
+        }), encoding="utf-8")
+        # Point the module's paths at the sandbox and (re)load its config
+        # from there. The real repo's config is never read or written.
+        server.REPO_ROOT = self.dir
+        server.TICKETS_DIR = self.dir / "tickets"
+        server.BOARD_HTML = self.dir / "board.html"
+        server.UPLOAD_HTML = self.dir / "upload.html"
+        server.UPLOAD_DIR = self.dir / "uploads"
+        server.CONFIG = server.load_config()
+        server.LAN = bool(server.CONFIG.get("lan"))
+        server.SECRET = auth.load_or_create_secret(self.dir / "state" / "session-secret")
+        server.LOGIN_GATE = auth.LoginGate(max_attempts=5, window_seconds=300)
+
+        class _PinnedHandler(server.Handler):
+            # A phone in the home network: a private client address, so
+            # guard.check_read runs the LAN branch under test. The Host
+            # is pinned too — the phone reaches the board at 192.168.1.42:8765,
+            # which is what the guard compares (a different port would be
+            # a different site: the DNS-rebinding case).
+            def parse_request(self):
+                ok = super().parse_request()
+                if ok:
+                    self.client_address = ("192.168.1.42", 54321)
+                    # http.client parses the request into a Compat32
+                    # HTTPMessage, whose __setitem__ APPENDS a duplicate
+                    # header instead of replacing it — so a plain
+                    # self.headers["Host"] = ... would leave the original
+                    # "127.0.0.1:<port>" in front, and the guard would
+                    # still read that. Delete first, then set.
+                    del self.headers["Host"]
+                    self.headers["Host"] = HOST_HDR
+                return ok
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _PinnedHandler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.cookie = None
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def req(self, method, path, body=None, send_cookie=True):
+        headers = {}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        if send_cookie and self.cookie:
+            headers["Cookie"] = f"werkbank_session={self.cookie}"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        try:
+            conn.request(method, path,
+                         body=json.dumps(body).encode() if body is not None else None,
+                         headers=headers)
+            res = conn.getresponse()
+            return res.status, res.read(), dict(res.getheaders())
+        finally:
+            conn.close()
+
+    def _login(self, password=None):
+        code, _, hdrs = self.req(
+            "POST", "/api/login",
+            {"password": password if password is not None else self.PASSWORD})
+        if code == 200:
+            cookie = next((v for k, v in hdrs.items() if k.lower() == "set-cookie"), "")
+            self.cookie = cookie.split("=", 1)[1].split(";")[0]
+        return code
+
+    # --- the two proven holes -------------------------------------------
+
+    def test_unauthenticated_api_request_is_rejected(self):
+        # Auth gate: without the session cookie, /api must not answer.
+        for path in ("/api/tickets", "/api/browse", "/api/uploads"):
+            code, body, _ = self.req("GET", path, send_cookie=False)
+            self.assertEqual(code, 401,
+                             f"{path} ohne Cookie: {code} {body[:120]}")
+
+    def test_login_wrong_password_then_right(self):
+        # Login flow, end to end: wrong is 401, right is 200 + real cookie.
+        self.assertEqual(self._login(password="falsch"), 401)
+        code = self._login()
+        self.assertEqual(code, 200)
+        self.assertTrue(auth.check_token(self.cookie, server.SECRET),
+                        "the Set-Cookie token must be a valid signed session")
+
+    def test_browse_outside_the_roots_is_rejected(self):
+        self.assertEqual(self._login(), 200)
+        code, body, _ = self.req("GET", "/api/browse?path=/etc")
+        self.assertEqual(code, 400, f"browse /etc: {code} {body[:120]}")
+        code, body, _ = self.req(
+            "GET", f"/api/browse?path={self.dir}/../../etc")
+        self.assertEqual(code, 400)
+
+    # --- core routes respond (wiring, not every route) ------------------
+
+    def test_board_page_serves_the_html(self):
+        # The / page stays login-free (board.html carries no secrets) —
+        # only the API is gated.
+        code, body, _ = self.req("GET", "/", send_cookie=False)
+        self.assertEqual(code, 200)
+        self.assertIn(b"WB108-Board", body)
+
+    def test_browse_inside_a_root_lists_it(self):
+        self.assertEqual(self._login(), 200)
+        code, body, _ = self.req("GET", f"/api/browse?path={self.dir}")
+        self.assertEqual(code, 200)
+        listing = json.loads(body)
+        self.assertEqual(listing["path"], str(self.dir.resolve()))
+        self.assertIn("tickets", [d["name"] for d in listing["dirs"]])
+
+    def test_api_tickets_answers_after_login(self):
+        self.assertEqual(self._login(), 200)
+        code, body, _ = self.req("GET", "/api/tickets")
+        self.assertEqual(code, 200)
+        payload = json.loads(body)
+        self.assertIn("tickets", payload)
+        self.assertIn("config", payload)
+        self.assertNotIn("password_hash", payload["config"],
+                         "the hash is credential material — it must not leave")
+
+    def test_unknown_route_is_404(self):
+        self.assertEqual(self._login(), 200)
+        code, _, _ = self.req("GET", "/api/does-not-exist")
+        self.assertEqual(code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()

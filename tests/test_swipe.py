@@ -6,7 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 
-BOARD = (Path(__file__).resolve().parent.parent / "src/werkbank/board.html").read_text()
+BOARD = (Path(__file__).resolve().parent.parent / "src/werkbank/board.html").read_text(encoding="utf-8")
 
 
 class SwipeCodeShape(unittest.TestCase):
@@ -140,19 +140,28 @@ class SwipeCodeShape(unittest.TestCase):
             "card openDetail click handler no longer gated by wasRecentSwipe()")
 
 
+def _read_const(name, pattern, cast):
+    # WB-109 P4: no silent fallback. A rename in board.html must FAIL loudly
+    # here rather than let the tests pass against a stale hardcoded number.
+    m = re.search(pattern, BOARD)
+    if not m:
+        raise AssertionError(
+            f"{name} not found in board.html — a rename would let these tests "
+            "assert against stale defaults instead of the real handler.")
+    return cast(m.group(1))
+
+
 def _swipe_const():
-    m = re.search(r"SWIPE_MIN\s*=\s*(\d+)", BOARD)
-    return int(m.group(1)) if m else 60
+    return _read_const("SWIPE_MIN", r"SWIPE_MIN\s*=\s*(\d+)", int)
 
 
 def _swipe_ratio():
-    m = re.search(r"SWIPE_RATIO\s*=\s*([\d.]+)", BOARD)
-    return float(m.group(1)) if m else 2.0
+    return _read_const("SWIPE_RATIO", r"SWIPE_RATIO\s*=\s*([\d.]+)", float)
 
 
 def _click_suppress_min():
-    m = re.search(r"CLICK_SUPPRESS_MIN\s*=\s*(\d+)", BOARD)
-    return int(m.group(1)) if m else 15
+    return _read_const("CLICK_SUPPRESS_MIN",
+                       r"CLICK_SUPPRESS_MIN\s*=\s*(\d+)", int)
 
 
 def _decide(dx, dy, SWIPE_MIN, RATIO=2.0):

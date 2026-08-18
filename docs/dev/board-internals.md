@@ -25,7 +25,7 @@ point of moving it out of the README.
   every ticket file lives its whole life under version control if you
   commit the folder.
 - All ticket-editing dialogs are resizable from the bottom-right corner.
-- On phones/tablets the six columns collapse to one list plus status
+- On phones/tablets the seven columns collapse to one list plus status
   chips at the top; swipe horizontally to change columns
   (`SWIPE_MIN = 40`, `SWIPE_RATIO = 1.5` after WB-68 round two).
 

@@ -1,0 +1,25 @@
+{
+  "ticket": "WB-108",
+  "seite": "opencode",
+  "modus": "Werkbank-Dispatch, lokales Modell",
+  "modell": "Qwen3.8-27B-Instruct",
+  "ergebnis": "FEHLGESCHLAGEN — Zeitbudget von 60 Minuten aufgebraucht",
+  "wanduhr_s": 3474,
+  "start_ca": "2026-08-16T18:44:00",
+  "ende": "2026-08-16T19:41:54.435868",
+  "versuche": "mindestens 2 (Attempt-2-Start um 19:27:45 beobachtet)",
+  "kosten_usd": 0.0,
+  "kosten_hinweis": "Kein Kontingent verbraucht. Keine Claude-Nachpruefung, weil die Pruefung nie gruen wurde.",
+  "gate": {
+    "befehl": "python3 -m pytest tests/ -q",
+    "gruen": false,
+    "detail": "Die hinterlassene Datei tests/test_server.py besteht ISOLIERT (7 Tests gruen), bricht aber die Gesamtsuite: der beim Import von server.py gestartete Dispatcher-Ticker ueberlebt das Modul, tearDownModule in test_dispatch.py schlaegt fehl ('queue ticker(s) outlived the tests'). 332 passed, 1 error."
+  },
+  "artefakt": {
+    "datei": "docs/dev/benchmarks/wb108-opencode-artefakt-test_server.py.txt",
+    "bytes": 7995,
+    "tests": 7,
+    "hinweis": "Aus dem Arbeitsbaum entfernt, damit die Suite wieder gruen ist (325)."
+  },
+  "stoerung": "Nicht sauber vergleichbar: zwischen 19:27 und 19:31 lief ein zweiter, herrenloser opencode-Prozess am selben Ticket und derselben Datei (WB-142). Die verlorene Zeit und die gegenseitige Beeinflussung sind nicht herausrechenbar."
+}

@@ -23,7 +23,8 @@
   }
   * { box-sizing: border-box; margin: 0; }
   body { font-family: -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-         background: var(--bg); color: var(--text); min-height: 100vh; }
+         background: var(--bg); color: var(--text); min-height: 100vh;
+         display: flex; flex-direction: column; }
   header { display: flex; align-items: center; gap: 1rem; padding: .9rem 1.4rem;
            border-bottom: 1px solid var(--border); }
   header h1 { font-size: 1.15rem; }
@@ -37,8 +38,11 @@
   select.ghost { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
            padding: .35rem .55rem; font-size: .88rem; cursor: pointer; color: var(--text);
            max-width: 14rem; }
-  #board { display: grid; grid-template-columns: repeat(6, 1fr); gap: .8rem;
-           padding: 1rem 1.4rem; align-items: start; }
+  /* WB-123: seven columns now — rueckfrage sits between in_arbeit and review. */
+  /* WB-143: no align-items:start, so columns stretch to the same height across the
+     whole grid row — an empty column stays a full drop target for drag & drop. */
+  #board { display: grid; grid-template-columns: repeat(7, 1fr); gap: .8rem;
+           padding: 1rem 1.4rem; flex: 1; }
   .col[data-status="zu_bearbeiten"] h2 { color: var(--accent); }
   .col { background: var(--col-bg); border-radius: 8px; padding: .6rem;
          min-height: 12rem; }
@@ -46,10 +50,28 @@
             color: var(--muted); padding: .2rem .4rem .6rem; }
   .col h2 .count { font-weight: normal; }
   .col.dragover { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  /* WB-203: where a dragged ticket would land inside the queue column. */
+  .drop-slot { height: 3px; margin: .25rem 0; border-radius: 2px;
+               background: var(--accent); }
   .col[data-status="fehlgeschlagen"] h2 { color: var(--hoch); }
+  /* WB-123: an unanswered question is not something to miss. */
+  .col[data-status="rueckfrage"] h2 { color: var(--hoch); }
+  .card.rueckfrage { border: 1px solid var(--hoch); }
+  .rueckfrage-form { margin-top: .55rem; padding-top: .5rem;
+                     border-top: 1px dashed var(--hoch); }
+  .rueckfrage-form .question { font-size: .82rem; color: var(--text);
+                     margin-bottom: .4rem; white-space: pre-wrap; }
+  .rueckfrage-form textarea { width: 100%; min-height: 3.2rem; font-size: 16px;
+                     border-radius: 4px; border: 1px solid var(--border);
+                     background: var(--bg); color: var(--text); padding: .35rem .5rem; }
+  .rueckfrage-form .actions { justify-content: flex-end; margin-top: .4rem; }
+  .rueckfrage-form button { padding: .35rem .75rem; font-size: .82rem; }
   .card { background: var(--card-bg); border-radius: 6px; padding: .6rem .7rem;
           margin-bottom: .5rem; box-shadow: 0 1px 2px var(--shadow); cursor: grab; }
   .card:active { cursor: grabbing; }
+  /* WB-150: in_arbeit / rueckfrage stay put — no drag cursor to promise otherwise. */
+  .card.frozen { cursor: default; }
+  .card.frozen:active { cursor: default; }
   .card .title { font-size: .92rem; margin-bottom: .45rem; }
   .card .meta { display: flex; align-items: center; gap: .5rem; font-size: .75rem;
                 color: var(--muted); }
@@ -57,6 +79,20 @@
   .bug-badge { background: var(--hoch); color: #fff; border-radius: 3px;
                padding: .05rem .35rem; font-size: .68rem; font-weight: 700;
                letter-spacing: .04em; }
+  /* WB-161: an epic is a planning ticket — visually distinct so a stranger
+     sees it is not a normal task, and prominent enough that a waiting one
+     (bounced back to Offen for lack of a chat session) is not overlooked. */
+  .epic-badge { background: var(--accent); color: #fff; border-radius: 3px;
+                padding: .05rem .35rem; font-size: .68rem; font-weight: 700;
+                letter-spacing: .04em; }
+  .card.epic { border-left: 3px solid var(--accent); }
+  .card.epic.waiting { border-left-width: 5px; box-shadow: 0 0 0 2px var(--accent),
+                       0 1px 2px var(--shadow); }
+  .epic-children { margin-top: .55rem; padding-top: .5rem;
+                   border-top: 1px dashed var(--border);
+                   font-size: .78rem; color: var(--muted); }
+  .epic-children .child { display: block; padding: .1rem 0; }
+  .epic-children .child.done { text-decoration: line-through; opacity: .6; }
   .link-badge { border: 1px solid var(--border); color: var(--muted);
                 border-radius: 3px; padding: .05rem .3rem; font-size: .68rem;
                 cursor: help; }
@@ -77,6 +113,12 @@
                font-size: 16px; border-radius: 4px; border: 1px solid var(--border);
                background: var(--bg); color: var(--text); }
   @media (max-width: 820px), (hover: none) { .card-move { display: block; } }
+  /* WB-138: nudge queued tickets forward on any screen size. */
+  .card-move-up { display: block; width: 100%; margin-top: .4rem;
+                  padding: .3rem .5rem; font-size: .78rem; cursor: pointer;
+                  border-radius: 4px; border: 1px solid var(--border);
+                  background: var(--bg); color: var(--text); }
+  .card-move-up:hover { filter: brightness(1.08); }
   .run-info { margin-top: .5rem; font-size: .72rem; color: var(--muted);
               border-top: 1px dashed var(--border); padding-top: .4rem; }
   .run-info.run-alert { color: var(--hoch); font-weight: 600; }
@@ -105,11 +147,40 @@
   #detail .result { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
                     padding: .7rem; font-size: .85rem; white-space: pre-wrap; max-height: 14rem;
                     overflow: auto; margin-top: .2rem; }
+  /* WB-200: the reviewer's reports get their OWN place above the result,
+     because at the bottom of the 14rem result box they were unfindable. */
+  #detail .reviews { margin-top: .9rem; }
+  #detail .reviews > details { border: 1px solid var(--border); border-radius: 4px;
+                    background: var(--bg); margin-bottom: .4rem; }
+  #detail .reviews > details > summary { cursor: pointer; padding: .45rem .6rem;
+                    font-size: .85rem; font-weight: 600; }
+  #detail .reviews .result { max-height: 22rem; border: 0; margin: 0;
+                    border-top: 1px solid var(--border); border-radius: 0; }
+  #detail .review-running { font-size: .85rem; color: var(--muted); margin: .6rem 0 0; }
+  .handover-late { color: var(--warn, #e0a03a); font-weight: 600; }
   .gate-row { margin-top: 10px; }
   .gate-hint { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
   .fork-label { display: flex; align-items: center; gap: .45rem; margin: .7rem 0 .2rem;
                 font-size: .85rem; cursor: help; }
   .fork-label input { width: auto; }
+  /* WB-168: opt-in "chat session only" checkbox — sits right under its
+     assignee select in the create/detail dialog. */
+  .interactive-label { display: flex; align-items: center; gap: .35rem;
+                       margin: .35rem 0 0; font-size: .78rem; color: var(--muted);
+                       cursor: help; }
+  .interactive-label input { width: auto; }
+  .interactive-badge { border: 1px solid var(--accent); color: var(--accent);
+                       border-radius: 3px; padding: .05rem .3rem; font-size: .68rem;
+                       font-weight: 600; }
+  /* WB-175: the router hint lives right under the assignee selector; muted
+     so it does not shout over the actual selectors. Empty by default. */
+  .router-hint { font-size: .75rem; color: var(--muted); margin-top: .25rem;
+                 min-height: 1em; }
+  .router-hint b { color: var(--accent); font-weight: 600; }
+  /* WB-220: shown when the assignee is a local-lane worker (opencode/dsh).
+     Names the honest limit at the point where the choice is made. */
+  .local-lane-note { font-size: .75rem; color: var(--muted); margin: .3rem 0 0; }
+  .local-lane-note code { color: var(--accent); }
   .browse-list { border: 1px solid var(--border); border-radius: 4px; max-height: 16rem;
                  overflow: auto; font-size: .88rem; }
   .browse-list div { padding: .4rem .6rem; cursor: pointer; }
@@ -198,8 +269,28 @@
         <select name="type">
           <option value="aufgabe" selected>Aufgabe</option>
           <option value="bug">Bug</option>
+          <option value="epic">Epic</option>
         </select></div>
-      <div><label>Zugewiesen an</label><input name="assignee" value="claude"></div>
+      <div><label>Zugewiesen an</label>
+        <select name="assignee">
+          <option value="claude" selected>claude</option>
+          <option value="opencode">opencode (lokales Modell)</option>
+          <option value="dsh">dsh (lokales Modell, DeepSeek-Harness)</option>
+        </select>
+        <label class="interactive-label" title="Angehakt: das Ticket geht nur an eine offene Chat-Session in dem Zielprojekt. Ist keine da, legt sich das Ticket zurück in „Offen“ mit einer klaren Meldung, statt still im Hintergrund zu laufen. Für opencode-Tickets ohne Wirkung (die haben keine Chat-Session).">
+          <input type="checkbox" name="interactive"> 🗨️ nur interaktiv
+        </label>
+        <!-- WB-220: local-lane workers cannot pause and ask; a rueckfrage
+             from them ends the ticket in Fehlgeschlagen with an explanation
+             instead of vanishing. Named where the assignee is chosen so it
+             steers the decision, not just explains the outcome. -->
+        <p class="local-lane-note" hidden>Kann keine Rückfragen stellen — der
+          Wrapper startet jede Aufgabe frisch. Wenn Klärung nötig ist, `claude`
+          wählen.</p>
+        <!-- WB-175: title-based router suggestion. Text is filled live from
+             config.assignee_router; empty when no pattern matches. -->
+        <div id="createRouterHint" class="router-hint"></div>
+      </div>
       <div><label>Priorität</label>
         <select name="priority">
           <option value="hoch">Hoch</option>
@@ -211,8 +302,9 @@
     <div class="gate-row" hidden>
       <label>Prüfung — sie entscheidet, ob die Arbeit gilt</label>
       <select name="gate"></select>
-      <p class="gate-hint">opencode arbeitet auf deinem eigenen Rechner. Was es
-        selbst über seine Arbeit sagt, zählt nicht — nur diese Prüfung.</p>
+      <p class="gate-hint">Das lokale Modell arbeitet auf deinem eigenen
+        Rechner. Was es selbst über seine Arbeit sagt, zählt nicht — nur diese
+        Prüfung.</p>
     </div>
 
     <div class="row">
@@ -241,8 +333,21 @@
         <select name="type">
           <option value="aufgabe">Aufgabe</option>
           <option value="bug">Bug</option>
+          <option value="epic">Epic</option>
         </select></div>
-      <div><label>Zugewiesen an</label><input name="assignee"></div>
+      <div><label>Zugewiesen an</label>
+        <select name="assignee">
+          <option value="claude">claude</option>
+          <option value="opencode">opencode (lokales Modell)</option>
+          <option value="dsh">dsh (lokales Modell, DeepSeek-Harness)</option>
+        </select>
+        <label class="interactive-label" title="Angehakt: das Ticket geht nur an eine offene Chat-Session in dem Zielprojekt. Ist keine da, legt sich das Ticket zurück in „Offen“ mit einer klaren Meldung, statt still im Hintergrund zu laufen. Für opencode-Tickets ohne Wirkung.">
+          <input type="checkbox" name="interactive"> 🗨️ nur interaktiv
+        </label>
+        <p class="local-lane-note" hidden>Kann keine Rückfragen stellen — der
+          Wrapper startet jede Aufgabe frisch. Wenn Klärung nötig ist, `claude`
+          wählen.</p>
+      </div>
       <div><label>Priorität</label>
         <select name="priority">
           <option value="hoch">Hoch</option>
@@ -254,8 +359,9 @@
     <div class="gate-row" hidden>
       <label>Prüfung — sie entscheidet, ob die Arbeit gilt</label>
       <select name="gate"></select>
-      <p class="gate-hint">opencode arbeitet auf deinem eigenen Rechner. Was es
-        selbst über seine Arbeit sagt, zählt nicht — nur diese Prüfung.</p>
+      <p class="gate-hint">Das lokale Modell arbeitet auf deinem eigenen
+        Rechner. Was es selbst über seine Arbeit sagt, zählt nicht — nur diese
+        Prüfung.</p>
     </div>
 
     <div class="row">
@@ -267,6 +373,7 @@
     <label class="fork-label" title="Angehakt: Der Agent arbeitet auf einer Abzweigung — die gemerkte Ticket-Session bleibt unverändert. Nicht angehakt: Der Agent setzt die gemerkte Ticket-Session direkt fort; sie wächst als eine durchgehende Unterhaltung. Gibt es keine gemerkte Ticket-Session, wird zur Sicherheit immer abgezweigt.">
       <input type="checkbox" name="fork"> ⑂ Auf Abzweigung arbeiten
     </label>
+    <div class="reviews" id="detailReviews" hidden></div>
     <label>Ergebnis (vom Agenten)</label>
     <div class="result" id="detailResult"></div>
     <div id="detailSession"></div>
@@ -347,13 +454,18 @@
 <div id="error"></div>
 
 <script>
+// WB-123: rueckfrage sits between in_arbeit and review — the agent has
+// paused with a question and needs the user to reply. The card carries an
+// inline answer form (desktop and phone) and the whole board colour-codes
+// it so an unanswered question is impossible to overlook.
 const COLUMNS = [
   ["offen", "Offen"], ["zu_bearbeiten", "Zu bearbeiten"],
-  ["in_arbeit", "In Arbeit"], ["review", "Review"],
+  ["in_arbeit", "In Arbeit"], ["rueckfrage", "Rückfrage"],
+  ["review", "Review"],
   ["fehlgeschlagen", "Fehlgeschlagen"], ["erledigt", "Erledigt"],
 ];
 let tickets = [], config = {}, fileErrors = [], runs = {}, pauseReason = null,
-    setupWarning = null;
+    setupWarning = null, reviewsRunning = [];
 // WB-10: only touch the DOM when the data really changed, never mid-drag.
 let lastSnapshot = "", dragging = false, pendingRender = false;
 
@@ -415,6 +527,7 @@ async function refresh() {
     tickets = data.tickets; config = data.config;
     fileErrors = data.errors || [];
     runs = data.runs || {};
+    reviewsRunning = data.reviews_running || [];
     pauseReason = data.pause || null;
     setupWarning = data.setup_warning || null;
     // Bucket the volatile idle counter (WB-37) so a silent run does not force
@@ -423,7 +536,8 @@ async function refresh() {
       ([id, r]) => [id, {...r, idle_seconds: Math.floor((r.idle_seconds || 0) / 30),
                          last: undefined, last_ts: undefined}]));
     const snap = JSON.stringify([data.tickets, data.errors, runsSnap,
-                                 data.pause, data.setup_warning]);
+                                 data.pause, data.setup_warning,
+                                 data.reviews_running]);
     if (dragging) {
       if (snap !== lastSnapshot) { lastSnapshot = snap; pendingRender = true; }
       return;
@@ -610,8 +724,15 @@ function renderPhone(visible) {
       render();
     });
     bar.appendChild(chip);
-    if (key === phoneStatus) requestAnimationFrame(
-      () => chip.scrollIntoView({ inline: "center", block: "nearest" }));
+    if (key === phoneStatus) requestAnimationFrame(() => {
+      // WB-164: scroll the statusBar HORIZONTALLY by hand — never touch the
+      // window. The old scroll-into-view call fell through to the document's
+      // vertical scroller (the statusBar is only horizontally scrollable),
+      // and once the user had scrolled down through a long list, every
+      // 5-second refresh yanked the page back to the top.
+      const center = chip.offsetLeft - (bar.clientWidth - chip.offsetWidth) / 2;
+      bar.scrollTo({ left: Math.max(0, center) });
+    });
   }
   const board = document.getElementById("board");
   board.innerHTML = "";
@@ -631,7 +752,67 @@ function renderPhone(visible) {
   board.appendChild(col);
 }
 
+// WB-200: a report that lands while the detail dialog is open used to stay
+// invisible until the dialog was closed and reopened — which reads as "the
+// button did nothing". Only the read-only parts are refreshed, never the form
+// fields the user may be typing in. We DO adopt the new version: the append we
+// just read is a server-side change, and carrying the stale version forward
+// would make every save after a review fail the WB-109 guard for no reason.
+function syncOpenDetail() {
+  const dlg = document.getElementById("detail");
+  if (!detailTicket || !dlg.open) return;
+  const fresh = tickets.find(x => x.id === detailTicket.id);
+  if (!fresh || fresh.version === detailTicket.version) {
+    renderReviews(detailTicket);   // the running-marker may still have changed
+    return;
+  }
+  detailTicket = fresh;
+  document.getElementById("detailResult").textContent =
+    splitBody(fresh.body).result || "(noch offen)";
+  renderReviews(fresh);
+}
+
+// WB-203: "Zu bearbeiten" IS a queue, and the board used to render it in
+// ticket-number order while the dispatcher took it in (priority, position)
+// order. So "▲ nach oben" worked — the ticket really did move up the queue —
+// and the card did not budge. Reproduced 2026-08-17: after one click the
+// dispatcher order was A → C → B and the board still showed A → B → C.
+// Same key as dispatch.Dispatcher.pump_queue, deliberately duplicated here
+// because the board has no way to ask the dispatcher.
+const PRIORITY_ORDER = { hoch: 0, normal: 1, niedrig: 2 };
+
+function ticketNumber(id) {
+  const m = /^WB-(\d+)$/.exec(id || "");
+  return m ? Number(m[1]) : 0;
+}
+
+function effectiveQueuePos(t) {
+  const n = Number(t.queue_pos);
+  return t.queue_pos !== "" && Number.isFinite(n) ? n : ticketNumber(t.id);
+}
+
+function queueOrder(cards, status) {
+  if (status !== "zu_bearbeiten") return cards;
+  return cards.slice().sort((a, b) =>
+    (PRIORITY_ORDER[a.priority] ?? 1) - (PRIORITY_ORDER[b.priority] ?? 1)
+    || effectiveQueuePos(a) - effectiveQueuePos(b)
+    || ticketNumber(a.id) - ticketNumber(b.id));
+}
+
+// Where a drop lands: the position inside the dragged ticket's OWN lane
+// (same project and priority — the dispatcher sorts by priority first, and
+// each project has its own worker). Peers ABOVE the drop point decide the
+// index, so dropping onto a foreign-lane card still gives a sane answer.
+function dropIndex(cards, t, beforeId) {
+  const lane = cards.filter(x => x.id !== t.id && x.project === t.project
+                                 && x.priority === t.priority);
+  if (!beforeId) return lane.length;                 // dropped below everything
+  const cut = cards.findIndex(x => x.id === beforeId);
+  return lane.filter(x => cards.indexOf(x) < cut).length;
+}
+
 function render() {
+  syncOpenDetail();
   renderFileErrors();
   updateProjectFilterOptions();
   const visible = projectFilter
@@ -644,7 +825,7 @@ function render() {
   for (const [key, label] of COLUMNS) {
     const col = document.createElement("div");
     col.className = "col"; col.dataset.status = key;
-    const cards = visible.filter(t => t.status === key);
+    const cards = queueOrder(visible.filter(t => t.status === key), key);
     col.innerHTML = `<h2>${label} <span class="count">· ${cards.length}</span></h2>`;
     // WB-55: a truly empty board (no visible tickets in any column) gave a
     // stranger no idea what to do — offer the first step in the Offen column.
@@ -657,19 +838,65 @@ function render() {
       col.appendChild(hint);
     }
     for (const t of cards) col.appendChild(cardEl(t));
-    col.addEventListener("dragover", e => { e.preventDefault(); col.classList.add("dragover"); });
-    col.addEventListener("dragleave", () => col.classList.remove("dragover"));
+    col.addEventListener("dragover", e => {
+      e.preventDefault(); col.classList.add("dragover");
+      // WB-203: inside the queue column, show WHERE the card would land.
+      if (key === "zu_bearbeiten") markDropSlot(col, e.clientY);
+    });
+    col.addEventListener("dragleave", () => {
+      col.classList.remove("dragover"); clearDropSlot(col);
+    });
     col.addEventListener("drop", async e => {
       e.preventDefault(); col.classList.remove("dragover");
+      const beforeId = dropSlotBefore(col);
+      clearDropSlot(col);
       const id = e.dataTransfer.getData("text/plain");
       const t = tickets.find(x => x.id === id);
-      if (!t || t.status === key) return;
-      try { await api("/api/tickets/" + id, { status: key }); }
+      if (!t) return;
+      // WB-203: a drop in the SAME column used to be thrown away, so the
+      // queue could not be reordered by dragging at all — the user could
+      // only use "▲ nach oben", whose effect was then invisible.
+      if (t.status === key) {
+        if (key !== "zu_bearbeiten" || beforeId === id) return;
+        const index = dropIndex(queueOrder(
+          (projectFilter ? tickets.filter(x => x.project === projectFilter) : tickets)
+            .filter(x => x.status === key), key), t, beforeId);
+        try { await api("/api/tickets/" + id + "/move-to", { index }); }
+        catch (err) { showError(err.message); }
+        refresh();
+        return;
+      }
+      // WB-109 P2: send the base version so a stale drop (agent bumped the
+      // ticket in the meantime) is REJECTED instead of overwriting silently.
+      try { await api("/api/tickets/" + id, { status: key, version: t.version }); }
       catch (err) { showError(err.message); }
       refresh();
     });
     board.appendChild(col);
   }
+}
+
+// WB-203: a thin line between two cards showing where the dragged ticket
+// lands. Kept in the DOM (not in a variable) so a re-render cannot leave a
+// stale marker behind: clearDropSlot always finds it again.
+function markDropSlot(col, clientY) {
+  const cards = [...col.querySelectorAll(".card")];
+  const before = cards.find(c => clientY < c.getBoundingClientRect().top
+                                 + c.getBoundingClientRect().height / 2);
+  clearDropSlot(col);
+  const mark = document.createElement("div");
+  mark.className = "drop-slot";
+  mark.dataset.before = before ? before.dataset.id : "";
+  if (before) col.insertBefore(mark, before); else col.appendChild(mark);
+}
+
+function clearDropSlot(col) {
+  for (const m of col.querySelectorAll(".drop-slot")) m.remove();
+}
+
+function dropSlotBefore(col) {
+  const m = col.querySelector(".drop-slot");
+  return m ? (m.dataset.before || null) : null;
 }
 
 const STATUS_LABEL = {
@@ -712,14 +939,24 @@ function linkInfo(t) {
 // "startet gleich" is true only when the ticket's own kind has no run running.
 function queueWaitReason(t) {
   if (pauseReason) return pauseReason;
+  // WB-105: only claude and the LOCAL lane start automatically — mirror of
+  // dispatch.known_assignee, keep in sync (WB-219 added dsh).
+  const who = (t.assignee || "claude").trim();
+  if (who !== "claude" && !isLocalLane(who))
+    return "Bearbeiter „" + who + "“ startet nicht automatisch — im Chat "
+         + "abarbeiten lassen oder Bearbeiter ändern";
   // WB-92: the run of the ticket's own assortment is the one that must finish
   // first — a Claude run in another project no longer means "startet gleich".
-  const own = t.assignee === "opencode" ? "opencode" : "claude";
-  const busy = Object.entries(runs).find(([, r]) => (r.model || "claude") === own);
+  // WB-146: for CLAUDE this is now project-scoped (each project has its own
+  //   CLAUDE_CONFIG_DIR, so different projects no longer share ~/.claude.json
+  //   and may run in parallel). The same-project fallback below covers that
+  //   case; here we only surface the global opencode single-slot.
+  // WB-219: opencode and dsh share ONE slot — same GPU, same box.
+  const own = isLocalLane(t.assignee) ? "lokal" : "claude";
+  const busy = own === "lokal"
+    && Object.entries(runs).some(([, r]) => isLocalLane(r.model));
   if (busy)
-    return own === "opencode"
-      ? "wartet, bis der laufende opencode-Lauf fertig ist"
-      : "wartet, bis der laufende Agent fertig ist";
+    return "wartet, bis der laufende Lauf des lokalen Modells fertig ist";
   const project = t.project || config.default_project || "";
   const sameProject = x => (x.project || config.default_project || "") === project;
   if (tickets.some(x => x.status === "in_arbeit" && sameProject(x)))
@@ -732,9 +969,85 @@ function queueWaitReason(t) {
   return "startet gleich …";
 }
 
+// WB-198: a handover is only as good as the session listening for it. The
+// watcher is a shell loop each chat session has to keep alive; when it is not
+// running, nothing happens and the card used to say "wartet auf Übernahme"
+// right up to the deadline — indistinguishable from a board that hangs. Show
+// the remaining time, and say plainly when the session is not answering.
+// WB-204: a ticket claimed by a CHAT session is a promise nobody checks. A
+// board run is verifiable (process, log, idle counter); a chat claim is one
+// field in a file. The card used to state flatly "wird sichtbar in Chat-Session
+// x… bearbeitet" — measured 2026-08-17 on WB-203, which said exactly that for
+// several minutes while the session was finishing something else. Say how long
+// the claim has been standing, and say plainly when that is too long.
+function claimHint(t, nowSec, warnSec) {
+  const who = (t.session || "").slice(0, 8);
+  const since = parseInt(t.claimed_at || "0", 10);
+  if (!since) {
+    return { text: `🗨️ von Chat-Sitzung ${who}… beansprucht — Zeitpunkt unbekannt`,
+             warn: false, stale: false,
+             title: "Eine Chat-Sitzung hat das Ticket übernommen, ohne einen "
+                  + "Zeitstempel zu setzen (älterer Weg). Ob dort gerade "
+                  + "gearbeitet wird, kann das Board nicht sehen." };
+  }
+  const mins = Math.floor(Math.max(0, nowSec - since) / 60);
+  const age = mins < 1 ? "gerade eben" : `seit ${mins} min`;
+  if (nowSec - since >= warnSec) {
+    return { text: `⚠️ ${age} von Chat-Sitzung ${who}… beansprucht, kein Ergebnis`,
+             warn: true, stale: true,
+             title: "So lange ohne Rückmeldung heisst meist: die Sitzung macht "
+                  + "gerade etwas anderes. Das Board kann Arbeit im Chat nicht "
+                  + "sehen — frag in der Sitzung nach, oder leg das Ticket mit "
+                  + "„↩︎ zurück in die Warteschlange“ wieder ab." };
+  }
+  return { text: `🗨️ ${age} von Chat-Sitzung ${who}… bearbeitet`,
+           warn: false, stale: false,
+           title: "Chat-Session: " + (t.session || "") + "\nDas Board sieht "
+                + "nicht, was im Chat passiert — es zeigt nur, wie lange der "
+                + "Anspruch steht." };
+}
+
+function handoverHint(t, nowSec, windowSec) {
+  const since = parseInt(t.handover_at || "0", 10);
+  const who = (t.handover || "").slice(0, 8);
+  if (!since) {
+    return { text: `an Chat-Sitzung ${who}… übergeben — wartet auf Übernahme`,
+             warn: false,
+             title: "Übergeben an eine offene Chat-Sitzung. Übernimmt sie nicht "
+                  + "rechtzeitig, startet automatisch ein Hintergrund-Lauf." };
+  }
+  const left = Math.max(0, since + windowSec - nowSec);
+  const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  if (left <= 0) {
+    return { text: `Sitzung ${who}… hat nicht übernommen — Hintergrund-Lauf startet`,
+             warn: true,
+             title: "Die Frist ist abgelaufen. Das Board übernimmt das Ticket "
+                  + "selbst; die Arbeit passiert dann nicht sichtbar im Chat." };
+  }
+  // Half the window gone with no claim: the watcher is probably not running.
+  if (left < windowSec / 2) {
+    return { text: `⚠️ Sitzung ${who}… meldet sich nicht — Hintergrund-Lauf in ${mmss}`,
+             warn: true,
+             title: "Die Chat-Sitzung hat den Anspruch noch nicht angenommen. "
+                  + "Meist läuft dort der Übergabe-Wachposten nicht. Sag in der "
+                  + "Sitzung „zieh dir dein Ticket“, dann geht es sofort weiter." };
+  }
+  return { text: `an Chat-Sitzung ${who}… übergeben — wartet auf Übernahme (${mmss})`,
+           warn: false,
+           title: "Übergeben an eine offene Chat-Sitzung. Übernimmt sie nicht "
+                + "innerhalb der Frist, startet automatisch ein Hintergrund-Lauf." };
+}
+
 function cardEl(t) {
   const el = document.createElement("div");
-  el.className = "card"; el.draggable = true;
+  // WB-150: an in_arbeit ticket is held by a running agent; a rueckfrage
+  // ticket is paused for the user's answer. Neither can be dragged out —
+  // the server rejects the PATCH anyway, and a "movable" card would only
+  // lie about it. The card stays clickable (opens detail).
+  const frozen = t.status === "in_arbeit" || t.status === "rueckfrage";
+  el.className = "card" + (frozen ? " frozen" : "");
+  el.dataset.id = t.id;          // WB-203: the drop marker needs to name it
+  el.draggable = !frozen;
   // Built element by element (WB-35, F5): ticket data must never be parsed as
   // HTML — an injected script here would run same-origin and could start
   // agent runs.
@@ -767,6 +1080,66 @@ function cardEl(t) {
     badge.className = "bug-badge"; badge.textContent = "BUG"; badge.title = "Bug-Ticket";
     el.querySelector(".id").after(badge);
   }
+  // WB-168: interactive-only opt-in. Same "waiting" ring as an epic when it
+  // was bounced back for lack of a chat session — reuses the same class so
+  // the epic and generic case look identical when they mean the same thing.
+  if (t.interactive === "ja" && t.type !== "epic") {
+    const badge = document.createElement("span");
+    badge.className = "interactive-badge"; badge.textContent = "🗨️";
+    badge.title = "Nur interaktiv — braucht eine offene Chat-Session in dem "
+      + "Zielprojekt. Ohne Chat legt sich das Ticket zurück in „Offen“.";
+    el.querySelector(".id").after(badge);
+    const result = splitBody(t.body || "").result || "";
+    if (t.status === "offen" && result.includes("Ticket wartet auf eine Chat-Session")) {
+      el.classList.add("epic", "waiting");
+    }
+  }
+  // WB-161: epic badge + card styling. `waiting` fires when a dispatched epic
+  // was bounced back to Offen because no chat session was available for the
+  // project — the ticket's result explains what to do next, but the ring
+  // makes sure the user sees the card at all.
+  if (t.type === "epic") {
+    el.classList.add("epic");
+    const badge = document.createElement("span");
+    badge.className = "epic-badge"; badge.textContent = "EPIC";
+    badge.title = "Epic — plane das Paket mit dem Zielprojekt und schreibe die "
+      + "Kind-Tickets. Braucht eine Chat-Session in dem Projekt.";
+    el.querySelector(".id").after(badge);
+    const result = splitBody(t.body || "").result || "";
+    if (t.status === "offen" && result.includes("Epic wartet auf eine Chat-Session"))
+      el.classList.add("waiting");
+    // Children: any ticket whose `epic:` frontmatter points at us. Compact
+    // list on the card so the epic's progress is visible without opening
+    // the detail dialog.
+    const children = tickets.filter(x => x.epic === t.id);
+    if (children.length) {
+      const box = document.createElement("div");
+      box.className = "epic-children";
+      const done = children.filter(c => c.status === "erledigt").length;
+      const head = document.createElement("div");
+      head.textContent = `Kinder (${done}/${children.length} erledigt):`;
+      box.appendChild(head);
+      for (const c of children.slice(0, 6)) {
+        const row = document.createElement("span");
+        row.className = "child" + (c.status === "erledigt" ? " done" : "");
+        row.textContent = `${c.id} · ${c.title.slice(0, 48)}`;
+        box.appendChild(row);
+      }
+      if (children.length > 6) {
+        const more = document.createElement("span");
+        more.className = "child";
+        more.textContent = `… und ${children.length - 6} weitere`;
+        box.appendChild(more);
+      }
+      el.appendChild(box);
+    }
+  }
+  if (t.epic) {
+    const eb = document.createElement("span");
+    eb.className = "link-badge"; eb.textContent = "🧭 " + t.epic;
+    eb.title = "Gehört zum Epic " + t.epic;
+    el.querySelector(".id").after(eb);
+  }
   const info = linkInfo(t);
   if (info.waits.length) {
     const b = document.createElement("span");
@@ -782,10 +1155,85 @@ function cardEl(t) {
   }
   if (info.blocked && (t.status === "offen" || t.status === "fehlgeschlagen"))
     el.classList.add("blocked");
+  // WB-176: one-click "hand this ticket to my chat session for discussion".
+  // Sets interactive=ja AND status=in_arbeit in one PATCH — the server then
+  // takes the WB-22 handover path if a chat is registered, or (WB-168's
+  // branch) bounces the ticket back to Offen with instructions when there
+  // isn't one. Shown only for claude tickets that are unblocked; for
+  // opencode the concept does not apply, blocked tickets would 409 anyway.
+  if (t.status === "offen"
+      && (t.assignee || "claude") === "claude"
+      && !info.blocked) {
+    const btn = document.createElement("button");
+    btn.className = "card-move-up"; btn.type = "button";
+    btn.textContent = "🗨️ Besprechen";
+    btn.title = "Startet das Ticket als interaktive Chat-Bearbeitung: es "
+      + "wird an eine offene Claude-Code-Session in dem Zielprojekt "
+      + "übergeben. Ist gerade keine Session offen, legt sich das Ticket "
+      + "kurz zurück in „Offen“ mit einer klaren Meldung („zieh dir dein "
+      + "Ticket“ im Projekt). Setzt auch das „🗨️ nur interaktiv“-Häkchen, "
+      + "damit spätere Läufe denselben Weg gehen.";
+    btn.addEventListener("click", async e => {
+      e.stopPropagation();
+      try {
+        await api("/api/tickets/" + t.id,
+                  { status: "in_arbeit", interactive: "ja",
+                    version: t.version });
+      } catch (err) { showError(err.message); }
+      refresh();
+    });
+    el.appendChild(btn);
+  }
   if (t.status === "zu_bearbeiten") {
     const line = document.createElement("div");
     line.className = "run-info";
     line.textContent = "⏳ " + queueWaitReason(t);
+    el.appendChild(line);
+    // WB-138: nudge a queued ticket one place forward within its priority.
+    // Server refuses if the ticket is already at the top; button hides
+    // dynamically to spare a UI check that would go stale on drag/drop.
+    const up = document.createElement("button");
+    up.className = "card-move-up"; up.type = "button";
+    up.textContent = "▲ nach oben";
+    up.title = "In der Warteschlange einen Platz nach oben — nur innerhalb "
+      + "derselben Priorität.";
+    up.addEventListener("click", async e => {
+      e.stopPropagation();
+      try { await api("/api/tickets/" + t.id + "/move-up", {}); }
+      catch (err) { showError(err.message); }
+      refresh();
+    });
+    el.appendChild(up);
+  }
+  // WB-137: what the finished run cost — read straight from the ticket
+  // fields the dispatcher wrote. Shown on review/erledigt/fehlgeschlagen
+  // cards so a glance at the board answers "wieviel hat das gekostet?".
+  if (["review", "erledigt", "fehlgeschlagen"].includes(t.status)
+      && (t.cost_usd || t.tokens_in || t.tokens_out || t.duration_s
+          || t.review_cost_usd)) {
+    const line = document.createElement("div");
+    line.className = "run-info";
+    const bits = [];
+    if (t.duration_s) {
+      // WB-139: "45s" up to a minute, else "Nm" for a quick read.
+      const s = Number(t.duration_s) || 0;
+      bits.push("⏱ " + (s < 60 ? s + "s" : Math.round(s / 60) + " min"));
+    }
+    if (t.cost_usd) bits.push("💰 " + Number(t.cost_usd).toFixed(2) + " $");
+    const io = (Number(t.tokens_in) || 0) + (Number(t.tokens_out) || 0);
+    if (io) bits.push(Math.round(io / 1000) + "k Token");
+    if (t.tokens_cache) bits.push("Cache " + Math.round(t.tokens_cache / 1000) + "k");
+    // WB-170: cumulative reviewer spend, if any. Distinct icon so it does
+    // not look like the run cost above — reviewer is a separate lane.
+    if (t.review_cost_usd)
+      bits.push("🔍 " + Number(t.review_cost_usd).toFixed(2) + " $");
+    line.textContent = bits.join(" · ");
+    line.title = "Was der Lauf verbraucht hat (Wanduhr des Laufs plus Kosten/"
+      + "Tokens aus dem Ergebnis-Ereignis der Claude-CLI). Bei Neuversuchen "
+      + "zaehlt der jeweils letzte Lauf; Warteschlangen- und Kontingent-Pausen "
+      + "sind nicht enthalten. 🔍 zaehlt die kumulierten Kosten aller "
+      + "„Review-Bot“-Klicks auf diesem Ticket — die Berichte selbst stehen "
+      + "im Ticket, gleich über dem Ergebnis.";
     el.appendChild(line);
   }
   if (t.status === "in_arbeit") {
@@ -794,10 +1242,11 @@ function cardEl(t) {
     const line = document.createElement("div");
     line.className = "run-info";
     if (t.handover) {
-      line.textContent = "an Chat-Session übergeben: " + t.handover.slice(0, 8)
-        + "… (wartet auf Übernahme)";
-      line.title = "Übergeben an die offene Chat-Session " + t.handover
-        + ". Übernimmt sie nicht rechtzeitig, startet automatisch ein Hintergrund-Lauf.";
+      const hint = handoverHint(t, Math.floor(Date.now() / 1000),
+                                (config.chat_handover_minutes || 5) * 60);
+      line.textContent = hint.text;
+      line.title = hint.title;
+      if (hint.warn) line.classList.add("handover-late");
     } else if (run) {
       const who = run.parent
         ? (run.forked ? "⑂ Abzweigung von " : "setzt fort: ") + run.parent.slice(0, 8) + "…"
@@ -815,7 +1264,8 @@ function cardEl(t) {
       line.title = (run.parent ? "Eltern-Session: " + run.parent
                                : "Ohne Vorgänger gestartet")
         + (run.last ? "\nLetztes Lebenszeichen: " + run.last : "")
-        + "\nProtokoll: /tmp/werkbank-agent-" + t.id + ".log";
+        + "\nProtokoll: siehe Board-Ausgabe (Linux/macOS ~/.local/state/werkbank/logs/, "
+        + "Windows %LOCALAPPDATA%\\werkbank\\logs\\)";
       // Silent for a while, or the agent reported an error → say so plainly.
       const idle = run.idle_seconds || 0;
       if (run.error) {
@@ -834,8 +1284,13 @@ function cardEl(t) {
       line.title = "Der Lauf wurde vom Nutzungslimit gestoppt und wird "
         + "automatisch fortgesetzt — du musst nichts tun.";
     } else if (t.session) {
-      line.textContent = "wird sichtbar in Chat-Session " + t.session.slice(0, 8) + "… bearbeitet";
-      line.title = "Chat-Session: " + t.session;
+      // WB-204: honest about what is actually known.
+      const claim = claimHint(t, Math.floor(Date.now() / 1000),
+                              (config.chat_claim_warn_minutes || 10) * 60);
+      line.textContent = claim.text;
+      line.title = claim.title;
+      if (claim.warn) line.classList.add("run-alert");
+      if (claim.stale) el.appendChild(requeueButton(t));
     } else {
       line.textContent = "kein Board-Lauf aktiv (Warteschlange oder Chat-Bearbeitung)";
     }
@@ -854,6 +1309,29 @@ function cardEl(t) {
   // or a short-and-almost-swipe still opens the detail dialog and looks
   // like "swipe didn't take".
   el.addEventListener("click", () => { if (wasRecentSwipe()) return; openDetail(t); });
+  // WB-140: adversarial reviewer on demand. Runs in its own thread on the
+  // server (fresh claude -p, tool-less); the report is appended to the
+  // ticket body as a `## Review-Bot (…)` section on the next refresh.
+  if (["review", "erledigt", "fehlgeschlagen"].includes(t.status)) {
+    const rev = document.createElement("button");
+    rev.className = "card-move-up"; rev.type = "button";
+    // WB-200: "läuft" used to live only in this button's DOM and was wiped by
+    // the next 5-second rebuild — one to two minutes of no feedback at all.
+    const busy = reviewsRunning.includes(t.id);
+    rev.disabled = busy;
+    rev.textContent = busy ? "🔍 Review läuft …" : "🔍 Review-Bot";
+    rev.title = "Adversarialer Review durch Claude Sonnet in einer frischen "
+      + "Instanz. Der Bericht landet als neuer Abschnitt im Ticket. "
+      + "Kostet ein paar Cent pro Klick. Der Bericht steht danach im Ticket, "
+      + "gleich über dem Ergebnis.";
+    rev.addEventListener("click", async e => {
+      e.stopPropagation();
+      rev.disabled = true; rev.textContent = "🔍 Review läuft …";
+      try { await api("/api/tickets/" + t.id + "/review", {}); }
+      catch (err) { showError(err.message); rev.disabled = false; rev.textContent = "🔍 Review-Bot"; }
+    });
+    el.appendChild(rev);
+  }
   if (t.status === "fehlgeschlagen") {
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -861,7 +1339,8 @@ function cardEl(t) {
     retry.type = "button"; retry.className = "accept"; retry.textContent = "Erneut versuchen";
     retry.addEventListener("click", async e => {
       e.stopPropagation();
-      try { await api("/api/tickets/" + t.id, { status: "in_arbeit" }); }
+      // WB-109 P2: version guard, see drop handler above.
+      try { await api("/api/tickets/" + t.id, { status: "in_arbeit", version: t.version }); }
       catch (err) { showError(err.message); }
       refresh();
     });
@@ -882,7 +1361,13 @@ function cardEl(t) {
     row.appendChild(b);
     el.appendChild(row);
   }
-  el.appendChild(moveControl(t));
+  if (t.status === "rueckfrage") {
+    el.classList.add("rueckfrage");
+    el.appendChild(rueckfrageForm(t));
+  }
+  // WB-150: same rule as `draggable` above — a frozen ticket has no legit
+  // manual status change from here (the answer form / dispatcher moves it).
+  if (!frozen) el.appendChild(moveControl(t));
   if (t.status === "review") {
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -890,7 +1375,8 @@ function cardEl(t) {
     accept.type = "button"; accept.className = "accept"; accept.textContent = "Annehmen";
     accept.addEventListener("click", async e => {
       e.stopPropagation();
-      try { await api("/api/tickets/" + t.id, { status: "erledigt" }); }
+      // WB-109 P2: version guard, see drop handler above.
+      try { await api("/api/tickets/" + t.id, { status: "erledigt", version: t.version }); }
       catch (err) { showError(err.message); }
       refresh();
     });
@@ -922,13 +1408,83 @@ function quickActions(t) {
     if (primary) b.className = "accept";
     b.addEventListener("click", async e => {
       e.stopPropagation();
-      try { await api("/api/tickets/" + t.id, { status: target }); }
+      // WB-109 P2: version guard, see drop handler above.
+      try { await api("/api/tickets/" + t.id, { status: target, version: t.version }); }
       catch (err) { if (!err.needsLogin) showError(err.message); }
       refresh();
     });
     row.appendChild(b);
   }
   return row;
+}
+
+// WB-123: extract the question the agent left in ## Ergebnis. The body follows
+// a strict shape (## Beschreibung, ## Ergebnis), and the run's final message
+// begins with 'RÜCKFRAGE AN DEN NUTZER:'. Whatever prose sits between the
+// marker and the next `##` heading is the question, warts and all.
+const RUECKFRAGE_MARKER = "RÜCKFRAGE AN DEN NUTZER:";
+function extractQuestion(body) {
+  const s = String(body || "");
+  const start = s.indexOf(RUECKFRAGE_MARKER);
+  if (start < 0) return "";
+  const after = s.slice(start + RUECKFRAGE_MARKER.length);
+  const stop = after.search(/\n## /);
+  return (stop < 0 ? after : after.slice(0, stop)).trim();
+}
+
+// WB-123: the answer form lives on the card so a decision is one tap away —
+// no need to open the detail dialog. Same shape on desktop and phone; the
+// textarea and Send button are sized to work with a thumb.
+function rueckfrageForm(t) {
+  const wrap = document.createElement("div");
+  wrap.className = "rueckfrage-form";
+  const q = document.createElement("div");
+  q.className = "question";
+  q.textContent = extractQuestion(t.body) || "(keine Frage gefunden)";
+  const ta = document.createElement("textarea");
+  ta.placeholder = "Antwort …";
+  ta.setAttribute("aria-label", "Antwort auf die Rückfrage");
+  ta.addEventListener("click", e => e.stopPropagation());
+  ta.addEventListener("keydown", e => e.stopPropagation());
+  const row = document.createElement("div");
+  row.className = "actions";
+  const send = document.createElement("button");
+  send.type = "button"; send.className = "primary"; send.textContent = "Antworten";
+  send.addEventListener("click", async e => {
+    e.stopPropagation();
+    const answer = ta.value.trim();
+    if (!answer) { showError("Antwort darf nicht leer sein."); return; }
+    send.disabled = true;
+    try {
+      await api("/api/tickets/" + t.id + "/answer",
+                { answer, version: t.version });
+    } catch (err) { showError(err.message); send.disabled = false; return; }
+    refresh();
+  });
+  row.appendChild(send);
+  wrap.append(q, ta, row);
+  return wrap;
+}
+
+// WB-204: put a stalled claim back where it can be picked up again. Clears
+// the session and the claim stamp, so the next run starts from a clean state
+// instead of resuming a session that has moved on.
+function requeueButton(t) {
+  const b = document.createElement("button");
+  b.className = "card-move-up"; b.type = "button";
+  b.textContent = "↩︎ zurück in die Warteschlange";
+  b.title = "Nimmt den Anspruch der Chat-Sitzung zurück und stellt das Ticket "
+    + "wieder an — die Warteschlange startet es sofort als eigenen "
+    + "Agenten-Lauf. Sinnvoll, wenn im Chat erkennbar nicht gearbeitet wird. "
+    + "Läuft bereits ein Agenten-Lauf, lehnt das Board den Klick ab.";
+  b.addEventListener("click", async e => {
+    e.stopPropagation();
+    try {
+      await api("/api/tickets/" + t.id + "/requeue", {});
+    } catch (err) { showError(err.message); }
+    refresh();
+  });
+  return b;
 }
 
 // WB-45: status change without dragging — the only way that works on a phone.
@@ -950,18 +1506,57 @@ function moveControl(t) {
     const target = sel.value;
     sel.value = "";
     if (!target) return;
-    try { await api("/api/tickets/" + t.id, { status: target }); }
+    // WB-109 P2: version guard, see drop handler above.
+    try { await api("/api/tickets/" + t.id, { status: target, version: t.version }); }
     catch (err) { if (!err.needsLogin) showError(err.message); }
     refresh();
   });
   return sel;
 }
 
+// WB-200: reviewer reports are their own `## Review-Bot (stamp)` sections at
+// the end of the body (written by store.append_review_note). Cut them OUT of
+// the result: they used to sit at the bottom of a 14rem scroll box behind the
+// agent's own report — 130 lines of it on WB-193 — so a report the user had
+// PAID for was invisible unless they scrolled that small box to its very end.
+// Splitting on a capturing regex keeps the stamps: [before, s1, t1, s2, t2, …].
+const REVIEW_SECTION = /^## Review-Bot \(([^)\n]*)\)[ \t]*$/m;
+
+function splitReviews(result) {
+  const parts = result.split(REVIEW_SECTION);
+  const reviews = [];
+  for (let i = 1; i + 1 < parts.length; i += 2)
+    reviews.push({ stamp: parts[i], text: parts[i + 1].trim() });
+  return { result: parts[0].trim(), reviews };
+}
+
 function splitBody(body) {
-  // body = "## Beschreibung\n\n...\n\n## Ergebnis\n\n..."
+  // body = "## Beschreibung\n\n...\n\n## Ergebnis\n\n...[## Review-Bot (…)]"
   const m = body.match(/## Beschreibung\n+([\s\S]*?)\n*## Ergebnis\n+([\s\S]*)/);
-  return m ? { description: m[1].trim(), result: m[2].trim() }
-           : { description: body.trim(), result: "" };
+  if (!m) return { description: body.trim(), result: "", reviews: [] };
+  const rev = splitReviews(m[2]);
+  return { description: m[1].trim(), result: rev.result, reviews: rev.reviews };
+}
+
+// WB-200: the ONE place a body is put back together. Both editors (detail
+// dialog, "Ablehnen") concatenated Beschreibung + Ergebnis themselves; now
+// that the reports live outside `result`, an editor that forgot them would
+// silently delete work the user was billed for. Round-trips byte-for-byte
+// with what store.append_review_note writes.
+function joinBody(description, result, reviews) {
+  let body = "## Beschreibung\n\n" + description.trim() +
+             "\n\n## Ergebnis\n\n" + (result.trim() || "_(noch offen)_") + "\n";
+  for (const r of reviews || [])
+    body += "\n## Review-Bot (" + r.stamp + ")\n\n" + r.text.trim() + "\n";
+  return body;
+}
+
+// WB-219: the assignees that run on the LOCAL model. Mirror of
+// dispatch.LOCAL_ASSIGNEES — they share one lane because they share one GPU.
+const LOCAL_LANE = ["opencode", "dsh"];
+
+function isLocalLane(who) {
+  return LOCAL_LANE.includes((who || "").trim().toLowerCase());
 }
 
 function projectName(path) {
@@ -991,12 +1586,66 @@ function fillProjectSelect(sel, selectedPath) {
 function openCreate() {
   const dlg = document.getElementById("create");
   document.getElementById("createForm").reset();
+  document.getElementById("createForm").dataset.assigneeDirty = "";
   // Active project filter wins over the default (WB-28).
   fillProjectSelect(document.getElementById("createProject"),
                     projectFilter || config.default_project);
+  updateRouterHint();          // WB-175 — zuerst, loescht den alten Vorschlag
+  applyCreateDefault();        // WB-228 — entscheidet mit frischem Stand
   syncGateRow(document.getElementById("createForm"));
+  syncLocalLaneNote(document.getElementById("createForm"));  // WB-220
   dlg.showModal();
 }
+
+// WB-175: title-based assignee router. Regex fragments live in
+// config.assignee_router (owner-maintained). Returns {assignee, reason} or
+// null. Safety rule: if BOTH sides match, claude wins — WB-146
+// ("Claude-Läufe parallelisieren") shows why a mis-suggestion toward
+// opencode would cost more than a mis-suggestion toward claude.
+function routerSuggest(title) {
+  const t = (title || "").trim();
+  if (!t) return null;
+  const router = config && config.assignee_router;
+  if (!router) return null;
+  const hit = (patterns) => {
+    for (const p of (patterns || [])) {
+      try {
+        const m = new RegExp(p, "i").exec(t);
+        if (m) return m[0];
+      } catch (e) { /* ignore an unparsable pattern, keep going */ }
+    }
+    return null;
+  };
+  const claudeMatch = hit(router.claude);
+  if (claudeMatch) return { assignee: "claude", reason: claudeMatch };
+  const opencodeMatch = hit(router.opencode);
+  if (opencodeMatch) return { assignee: "opencode", reason: opencodeMatch };
+  return null;
+}
+
+function updateRouterHint() {
+  const form = document.getElementById("createForm");
+  const hint = document.getElementById("createRouterHint");
+  if (!form || !hint) return;
+  const s = routerSuggest(form.title ? form.title.value : "");
+  form.dataset.routerSuggestion = s ? s.assignee : "";
+  if (!s) { hint.textContent = ""; return; }
+  // Built element-by-element so the reason string (which contains user text)
+  // never gets parsed as HTML (WB-35 F5).
+  hint.textContent = "Vorschlag: ";
+  const b = document.createElement("b");
+  b.textContent = s.assignee;
+  hint.appendChild(b);
+  hint.appendChild(document.createTextNode(" — passt zu „" + s.reason + "“"));
+}
+
+// Titel-Aenderung -> Vorschlag neu -> Entscheidung neu (solange keine Handwahl).
+(function () {
+  const form = document.getElementById("createForm");
+  if (form && form.title) {
+    form.title.addEventListener("input", applyCreateDefault);
+  }
+})();
 
 function openProjects() {
   renderProjectList();
@@ -1094,11 +1743,54 @@ function gateNames(project) {
   return ((config.gates || {})[project || config.default_project] || []);
 }
 
+// WB-228 (the owner's stated goal, 2026-08-18: dsh as the default): the
+// CREATE default is dsh — but only where it can actually start. A project
+// without a named check refuses local assignees outright, and a default that
+// runs straight into a refusal is not a default, so those fall back to claude.
+// The WB-175 router outranks the default; a hand-picked value is never
+// overwritten (dirty flag until the dialog reopens). The detail dialog keeps
+// the stored assignee untouched.
+function defaultAssignee(project) {
+  return gateNames(project).length ? "dsh" : "claude";
+}
+
+function applyCreateDefault() {
+  // Review-Befunde 1+2 (Werkbank-Session): dataset.routerSuggestion ueberlebte
+  // form.reset(), also griff die Vorbelegung nur einmal pro Seitenladung — und
+  // die behauptete Rangfolge existierte nicht, weil der Router nur einen
+  // HINWEIS malte. Jetzt entscheidet EINE Funktion, in echter Rangfolge:
+  // Handwahl > Router-Vorschlag > gate-bewusster Standard. Sie haengt an
+  // Dialog-Oeffnung, Titel-Eingabe (via updateRouterHint) und Projektwechsel.
+  const form = document.getElementById("createForm");
+  if (!form || form.dataset.assigneeDirty === "ja") return;
+  const s = routerSuggest(form.title ? form.title.value : "");
+  const project = form.project ? form.project.value : "";
+  form.assignee.value = s ? s.assignee : defaultAssignee(project);
+  syncGateRow(form);
+  syncLocalLaneNote(form);
+}
+
+// The assignee is a dropdown (claude / opencode — the two lanes that start by
+// themselves). A ticket may still name someone else (a person, an experiment):
+// keep that value selectable instead of silently rewriting it to claude on the
+// next save.
+function setAssignee(form, value) {
+  const sel = form.assignee;
+  const who = (value || "claude").trim();
+  if (!Array.from(sel.options).some(o => o.value === who)) {
+    const o = document.createElement("option");
+    o.value = who;
+    o.textContent = who + " (startet nicht automatisch)";
+    sel.append(o);
+  }
+  sel.value = who;
+}
+
 function syncGateRow(form) {
   const row = form.querySelector(".gate-row");
   if (!row) return;
   const sel = row.querySelector("select[name=gate]");
-  const wanted = (form.assignee.value || "").trim().toLowerCase() === "opencode";
+  const wanted = isLocalLane(form.assignee.value);
   row.hidden = !wanted;
   if (!wanted) return;
   const project = form.project ? form.project.value : "";
@@ -1122,17 +1814,47 @@ function syncGateRow(form) {
   sel.dataset.wanted = "";
 }
 
+// WB-220: named at the point of decision. Toggled by the same events as
+// the gate row so the two hints stay in step; content is static.
+function syncLocalLaneNote(form) {
+  const note = form.querySelector(".local-lane-note");
+  if (!note) return;
+  note.hidden = !isLocalLane(form.assignee.value);
+}
+
 for (const id of ["createForm", "detailForm"]) {
   const form = document.getElementById(id);
   if (!form) continue;
-  form.assignee.addEventListener("input", () => syncGateRow(form));
-  if (form.project) form.project.addEventListener("change", () => syncGateRow(form));
+  const sync = () => { syncGateRow(form); syncLocalLaneNote(form); };
+  form.assignee.addEventListener("input", sync);
+  form.assignee.addEventListener("change", sync);
+  if (form.project) form.project.addEventListener("change", sync);
 }
+// WB-228: a hand-picked assignee is sacred until the dialog reopens; a project
+// change re-evaluates the default only while untouched.
+{
+  const cf = document.getElementById("createForm");
+  if (cf) {
+    cf.assignee.addEventListener("input",
+      () => { cf.dataset.assigneeDirty = "ja"; });
+    if (cf.project) cf.project.addEventListener("change", applyCreateDefault);
+  }
+}
+
+// WB-175: live router-suggestion under the assignee — updates as the title
+// is typed. The suggestion itself never overrides the dropdown; the user
+// picks. On submit we ship the CURRENT suggestion along so the server can
+// log overrides (suggestion != chosen) for later regex calibration.
+document.getElementById("createForm").title.addEventListener(
+  "input", updateRouterHint);
 
 document.getElementById("createForm").addEventListener("submit", async () => {
   const formEl = document.getElementById("createForm");
   const body = Object.fromEntries(new FormData(formEl).entries());
   body.fork = formEl.fork.checked ? "ja" : "nein";
+  body.interactive = formEl.interactive.checked ? "ja" : "nein";
+  if (formEl.dataset.routerSuggestion)                      // WB-175
+    body.router_suggestion = formEl.dataset.routerSuggestion;
   if (!body.gate) delete body.gate;
   try {
     await api("/api/tickets", body);
@@ -1141,6 +1863,37 @@ document.getElementById("createForm").addEventListener("submit", async () => {
 });
 
 let detailTicket = null;
+// WB-200: the reviewer's reports, newest first, each in its own foldable
+// section with stamp and price in the heading. The newest one starts OPEN —
+// the user just paid for it, they should not have to hunt for it.
+function renderReviews(t) {
+  const box = document.getElementById("detailReviews");
+  box.innerHTML = "";
+  if (reviewsRunning.includes(t.id)) {
+    const p = document.createElement("p");
+    p.className = "review-running";
+    p.textContent = "🔍 Ein Review läuft gerade. Der Bericht erscheint hier von "
+      + "selbst, sobald er fertig ist — das dauert ein bis zwei Minuten.";
+    box.appendChild(p);
+  }
+  const revs = splitBody(t.body || "").reviews.slice().reverse();
+  revs.forEach((r, i) => {
+    const d = document.createElement("details");
+    d.open = i === 0;
+    const sum = document.createElement("summary");
+    const cost = (r.text.match(/💰 \$([0-9.]+)/) || [])[1];
+    sum.textContent = "🔍 Review-Bot · " + r.stamp
+      + (cost ? " · $" + Number(cost).toFixed(2) : "")
+      + (i === 0 && revs.length > 1 ? " · neuester" : "");
+    const txt = document.createElement("div");
+    txt.className = "result";
+    txt.textContent = r.text;
+    d.append(sum, txt);
+    box.appendChild(d);
+  });
+  box.hidden = !box.children.length;
+}
+
 function openDetail(t) {
   detailTicket = t;
   const form = document.getElementById("detailForm");
@@ -1149,15 +1902,18 @@ function openDetail(t) {
   form.title.value = t.title;
   form.description.value = parts.description;
   form.type.value = t.type || "aufgabe";
-  form.assignee.value = t.assignee;
+  setAssignee(form, t.assignee);
   form.querySelector("select[name=gate]").dataset.wanted = t.gate || "";
   syncGateRow(form);
+  syncLocalLaneNote(form);                                   // WB-220
   form.priority.value = t.priority;
   fillProjectSelect(document.getElementById("detailProject"), t.project);
   form.nach.value = t.nach || "";
   form.nicht_mit.value = t.nicht_mit || "";
   form.fork.checked = t.fork === "ja";
+  form.interactive.checked = t.interactive === "ja";
   document.getElementById("detailResult").textContent = parts.result || "(noch offen)";
+  renderReviews(t);
   const sess = document.getElementById("detailSession");
   const run = runs[t.id];
   const lines = [];
@@ -1172,14 +1928,14 @@ function openDetail(t) {
 document.getElementById("detailForm").addEventListener("submit", async () => {
   const form = document.getElementById("detailForm");
   const parts = splitBody(detailTicket.body);
-  const body = "## Beschreibung\n\n" + form.description.value.trim() +
-               "\n\n## Ergebnis\n\n" + (parts.result || "_(noch offen)_") + "\n";
+  const body = joinBody(form.description.value, parts.result, parts.reviews);
   try {
     await api("/api/tickets/" + detailTicket.id, {
       title: form.title.value, type: form.type.value, assignee: form.assignee.value,
       priority: form.priority.value, project: form.project.value,
       nach: form.nach.value, nicht_mit: form.nicht_mit.value,
-      fork: form.fork.checked ? "ja" : "nein", body,
+      fork: form.fork.checked ? "ja" : "nein",
+      interactive: form.interactive.checked ? "ja" : "nein", body,
       gate: form.querySelector("select[name=gate]").disabled
         ? "" : form.querySelector("select[name=gate]").value,
       version: detailTicket.version,
@@ -1191,7 +1947,7 @@ document.getElementById("detailForm").addEventListener("submit", async () => {
 async function deleteTicket() {
   if (!detailTicket) return;
   const sure = confirm(detailTicket.id + " – „" + detailTicket.title + "“ wirklich löschen?\n"
-    + "(Über die Sicherungs-Historie bleibt es wiederherstellbar.)");
+    + "(Das Board selbst sichert nicht: Wiederherstellen kann der Assistent das Ticket nur, wenn es vorher schon einmal mit git committet wurde. War es das nie, ist es mit dem Löschen weg — im Zweifel vorher im Chat „sichere die Tickets“ sagen.)");
   if (!sure) return;
   try {
     await api("/api/tickets/" + detailTicket.id, null, "DELETE");
@@ -1236,9 +1992,8 @@ document.getElementById("rejectForm").addEventListener("submit", async e => {
   if (!reason) { e.preventDefault(); showError("Bitte einen Grund angeben."); return; }
   const parts = splitBody(rejectTicket.body);
   const today = new Date().toISOString().slice(0, 10);
-  const body = "## Beschreibung\n\n" + parts.description +
-               "\n\n**Ablehnung (" + today + "):** " + reason +
-               "\n\n## Ergebnis\n\n" + (parts.result || "_(noch offen)_") + "\n";
+  const body = joinBody(parts.description + "\n\n**Ablehnung (" + today
+                        + "):** " + reason, parts.result, parts.reviews);
   try {
     await api("/api/tickets/" + rejectTicket.id,
               { status: "offen", body, version: rejectTicket.version });

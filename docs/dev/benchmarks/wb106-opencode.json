@@ -1,0 +1,40 @@
+{
+  "ticket": "WB-106",
+  "seite": "opencode",
+  "modus": "Werkbank-Dispatch, lokales Modell",
+  "modell": "Qwen3.8-27B-Instruct",
+  "wanduhr_s": 2402.0,
+  "start": "2026-08-16T17:23:04",
+  "ende": "2026-08-16T18:03:06",
+  "kosten_usd_lokal": 0.0,
+  "kosten_usd_claude_review": 0.104904,
+  "kosten_hinweis": "Der lokale Lauf kostet kein Kontingent. Die zum Ablauf gehoerende Claude-Kurzpruefung des Diffs (Modell sonnet, ein Zug ohne Werkzeuge) wird von der Werkbank NICHT als Kosten protokolliert — separat zu messen.",
+  "gate": {
+    "befehl": "python3 -m pytest tests/ -q",
+    "gruen": true,
+    "tests_gesamt": 323,
+    "tests_vorher": 319,
+    "unabhaengig_nachgefahren": true
+  },
+  "artefakt": {
+    "dateien": [
+      "src/werkbank/guard.py",
+      "tests/test_auth.py",
+      "docs/journal/2026-08-16-wb106-host-without-port.md"
+    ],
+    "zeilen_hinzugefuegt": 59
+  },
+  "berichtstreue": "Stichprobe bestanden: die im Ergebnis genannte Journaldatei existiert, die genannte Testklasse HostWithoutPortTest existiert, die Suite ist unabhaengig nachgefahren gruen (323).",
+  "kosten_usd_gesamt": 0.1049,
+  "review_messung": {
+    "methode": "Die Werkbank protokolliert die Kosten der Kurzpruefung nicht. Nachgemessen mit demselben Aufruf (Modell sonnet, keine Werkzeuge, ein Zug) und demselben Prompt-Aufbau (Akzeptanzkriterien + committeter Diff von 354f76e).",
+    "dauer_s": 32.0,
+    "tokens": {
+      "input": 3,
+      "output": 1740,
+      "cache_read": 0
+    },
+    "urteil": "VERDICT: OK\n\nDer Diff behebt genau das beschriebene Problem:\n\n1. **`_split_host`**: Der neue Early-Return `if \":\" not in host: return host, None` verhindert, da",
+    "hinweis": "Nachmessung, nicht der Originallauf — Preis derselben Groessenordnung, nicht bitgleich."
+  }
+}

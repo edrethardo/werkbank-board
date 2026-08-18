@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""Reference launcher for the DeepSeek-Harness worker — ADAPT OR REPLACE.
+
+Werkbank dispatches a ticket with `assignee: dsh` by running:
+
+    dsh-task <project-dir> [model-id]  < task-text-on-stdin
+
+Deliberately the SAME contract as `opencode-task` in this folder. The board
+has one code path for both, one exit-code mapping, one set of expectations —
+adding a second shape would have doubled the surface for no gain.
+
+THE CONTRACT — the board depends on exactly this:
+
+    argv[1]   absolute path of the project to work in (required)
+    argv[2]   model id (optional, advisory: this script prefers what the
+              endpoint actually serves)
+    stdin     the task text, verbatim, UTF-8, possibly tens of kilobytes
+    stdout    the agent's FINAL text and nothing else, copied into the ticket
+    stderr    diagnostics
+    exit 0    success, final text on stdout
+    exit 3    the project directory does not exist
+    exit 4    the model endpoint is unreachable (box off, engine not loaded)
+    exit 5    the agent ran but produced no final text
+    other     the agent's own exit code
+
+FOUR THINGS THAT COST REAL DEBUGGING TIME. They are the reason this file
+exists next to `opencode-task` instead of being one line different:
+
+  1. dsh takes its task ONLY as a command-line argument and does not read
+     stdin. A single argv element dies at ~128 KB — and the board's contract
+     forbids argv for exactly that reason. This launcher therefore SPOOLS the
+     task into a file inside the project and passes only a reference to it.
+     The board never sees that detail.
+  2. The harness sandbox derives its workspace root from the CURRENT WORKING
+     DIRECTORY. The same call worked from one directory and failed from
+     another. This launcher chdirs into the target itself — do not wrap it in
+     your own cwd trick.
+  3. Without `HOME` the harness cannot find its profiles and reports a
+     loader error that reads like a broken installation. It is a missing
+     variable. This launcher always passes one.
+  4. The harness needs a current Node. A minimal environment can put an old
+     `node` first on PATH, and the failure message names neither Node nor the
+     version. Set `DSH_NODE_BIN` and this launcher puts it in front.
+
+Configuration, all optional, all via environment:
+
+    DSH_BIN            the harness to run        (default: "dsh")
+    DSH_PROFILE        profile to use            (default: "headless")
+    DSH_NODE_BIN       node executable to prefer (default: unset)
+    DSH_ENDPOINT       OpenAI-compatible base    (default: unset — no probe)
+    DSH_TIMEOUT        seconds for the whole run (default: 3600)
+    DSH_PROBE_TIMEOUT  seconds to wait for the endpoint (default: 60)
+
+Requires only the Python 3 standard library.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+BAD_DIRECTORY = 3
+ENDPOINT_DOWN = 4
+NO_FINAL_TEXT = 5
+
+
+def log(message: str) -> None:
+    """Diagnostics go to stderr — stdout belongs to the result alone."""
+    print(f"dsh-task: {message}", file=sys.stderr, flush=True)
+
+
+def served_model(endpoint: str, deadline: float):
+    """First model the endpoint reports, or None.
+
+    Retries until the deadline instead of believing the first empty answer: a
+    socket-activated engine accepts the connection while it is still loading
+    weights, and concluding "down" from that fails every first ticket after an
+    idle period."""
+    url = endpoint.rstrip("/") + "/models"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                data = json.load(response)
+            models = data.get("data") or []
+            if models and isinstance(models[0], dict) and models[0].get("id"):
+                return str(models[0]["id"])
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+            pass
+        time.sleep(3)
+    return None
+
+
+def final_text(raw: str) -> str:
+    """The agent's last answer.
+
+    Plain text is taken as-is — that is what a harness printing prose gives
+    you. If the output is JSON (or JSON lines) the structure is walked for
+    text nodes instead of pinning a schema, because agents change their event
+    shapes and a launcher that guesses wrong reports an empty result, which
+    the board can only read as 'the model produced nothing'."""
+    texts: list = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "text" and isinstance(node.get("text"), str):
+                texts.append(node["text"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    def structured(text):
+        """A parsed event structure, or None.
+
+        Only dicts and lists count. `200007` and `true` are valid JSON too,
+        and treating them as an empty event structure made the launcher
+        report "no final text" for a perfectly good one-line answer — found
+        by the test that feeds a 200 KB task and prints its byte count."""
+        try:
+            node = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return node if isinstance(node, (dict, list)) else None
+
+    saw_json = False
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        node = structured(line)
+        if node is not None:
+            walk(node)
+            saw_json = True
+    if not saw_json:
+        node = structured(raw)
+        if node is not None:
+            walk(node)
+            saw_json = True
+    if texts:
+        return texts[-1].strip()
+    return "" if saw_json else raw.strip()
+
+
+def end_process_tree(proc) -> None:
+    """Terminate the run AND whatever it started. A stray child holding a pipe
+    is how a finished run keeps a board busy."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except OSError:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            proc.kill()
+
+
+def spool_task(project: str, task: str):
+    """Write the task where the sandboxed agent can read it, and return the
+    path. Inside the project because the harness may refuse to read outside
+    its workspace root; distinctive name and removed again in `main`."""
+    path = os.path.join(project, f".dsh-task-{os.getpid()}.md")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(task)
+    return path
+
+
+def child_env():
+    """HOME is mandatory (see note 3); a preferred Node goes first (note 4)."""
+    env = dict(os.environ)
+    env.setdefault("HOME", os.path.expanduser("~"))
+    node = os.environ.get("DSH_NODE_BIN", "").strip()
+    if node:
+        node_dir = os.path.dirname(os.path.abspath(node))
+        env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def main(argv) -> int:
+    if len(argv) < 2:
+        log("usage: dsh-task <project-dir> [model-id] < task.txt")
+        return 2
+    project = argv[1]
+    wanted_model = argv[2] if len(argv) > 2 else ""
+
+    if not os.path.isdir(project):
+        log(f"no such directory: {project}")
+        return BAD_DIRECTORY
+
+    task = sys.stdin.read()          # verbatim, however long
+    if not task.strip():
+        log("empty task on stdin — refusing to run the model on nothing")
+        return NO_FINAL_TEXT
+
+    model = wanted_model
+    endpoint = os.environ.get("DSH_ENDPOINT", "").strip()
+    if endpoint:
+        probe = float(os.environ.get("DSH_PROBE_TIMEOUT", "60"))
+        actually = served_model(endpoint, time.monotonic() + probe)
+        if not actually:
+            log(f"endpoint unreachable or serving nothing: {endpoint}")
+            return ENDPOINT_DOWN
+        if wanted_model and wanted_model != actually:
+            log(f"WARNING requested {wanted_model!r} but endpoint serves "
+                f"{actually!r}; using what is served")
+        model = actually
+
+    try:
+        task_file = spool_task(project, task)
+    except OSError as error:
+        # Refusing beats passing the task as argv: over ~128 KB that dies
+        # with "Argument list too long", which reads like a model failure.
+        log(f"cannot write the task into {project}: {error}")
+        return NO_FINAL_TEXT
+
+    agent = os.environ.get("DSH_BIN", "dsh")
+    profile = os.environ.get("DSH_PROFILE", "headless")
+    reference = (f"Read the file {os.path.basename(task_file)} in this "
+                 f"directory completely and carry out the task described in "
+                 f"it. That file IS the task; this sentence only points to it.")
+    cmd = [agent, "--profile", profile, reference]
+    log(f"model={model or 'default'} dir={project} profile={profile}")
+
+    # Output goes to FILES, never to our own descriptors: a stray child cannot
+    # then hold the caller's pipe open and stall the board.
+    proc = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="dsh-task-") as scratch:
+            out_path = os.path.join(scratch, "out")
+            err_path = os.path.join(scratch, "err")
+            try:
+                with open(out_path, "wb") as out, open(err_path, "wb") as err:
+                    proc = subprocess.Popen(
+                        cmd, stdout=out, stderr=err,
+                        stdin=subprocess.DEVNULL,
+                        cwd=project,              # sandbox root, see note 2
+                        env=child_env(),
+                        start_new_session=True)   # own process group
+                    try:
+                        code = proc.wait(timeout=float(
+                            os.environ.get("DSH_TIMEOUT", "3600")))
+                    except subprocess.TimeoutExpired:
+                        log("timeout — ending the run and everything it started")
+                        end_process_tree(proc)
+                        code = 124
+            except FileNotFoundError:
+                log(f"agent not found: {agent} (set DSH_BIN)")
+                return 127
+            finally:
+                if proc is not None:
+                    end_process_tree(proc)   # nothing outlives this script
+
+            raw = open(out_path, encoding="utf-8", errors="replace").read()
+            noise = open(err_path, encoding="utf-8",
+                         errors="replace").read().splitlines()
+            if len(noise) > 50:
+                log(f"… {len(noise) - 50} earlier line(s) of agent output omitted")
+                noise = noise[-50:]
+            for line in noise:
+                print(line, file=sys.stderr)
+            answer = final_text(raw)
+            if not answer:
+                log(f"no final text (agent exit {code}) — its output is above")
+                return NO_FINAL_TEXT if code == 0 else code
+    finally:
+        try:
+            os.unlink(task_file)     # never leave the spool in the project
+        except OSError:
+            pass
+
+    print(answer)                    # stdout: the result, nothing else
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

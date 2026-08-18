@@ -1,14 +1,14 @@
 ---
 name: werkbank-upload-files
 description: Use when the user wants to get pictures or screenshots from their phone onto this machine — "vom Handy hochladen", "Screenshot schicken", "Bild hochladen", "wie kriege ich das Foto auf den Rechner" — point them at the Werkbank upload page and use the files afterwards.
-version: 1
+version: 2
 ---
 
 # Werkbank: Bilder vom Handy hochladen
 
 ## Path to the Werkbank — the ONLY line you adapt
 
-    WERKBANK=/home/USER/code/agent_ticket
+    WERKBANK=/pfad/zur/werkbank
 
 Never put this path inside a Python string: `~` is expanded by the SHELL only
 (WB-47).
@@ -30,7 +30,7 @@ real files.
   unasked.
 - Get the address the phone must open:
 
-      WERKBANK=/home/USER/code/agent_ticket python3 - <<'EOF'
+      WERKBANK=/pfad/zur/werkbank python3 - <<'EOF'
       import json, os, socket
       cfg = json.load(open(os.path.join(os.environ["WERKBANK"], "config.json")))
       ip = socket.gethostbyname(socket.gethostname())
@@ -45,15 +45,19 @@ real files.
 
 ## 3. Pick the files up
 
-    ls -lt "$WERKBANK/docs/images/" | head
+    ls -lt "$WERKBANK/uploads/" | head
 
 Files are named `<originalname>-<datum>-<uhrzeit>.<ext>`, so the newest are
 yours. Confirm with the user which file is which before using them.
 
 ## 4. Use them, then keep the folder honest
 
-- Images that belong to the repo (README, docs) stay in `docs/images/` and are
-  committed with the change that uses them.
+- Uploads land in `uploads/` — gitignored and never published (WB-104: an
+  uploaded file reached the PUBLIC repo when uploads still went to
+  docs/images/). An image that should BECOME part of the repo (README,
+  docs) is MOVED to `docs/images/`, committed with the change that uses
+  it, and added to the publisher's BINARY_ALLOWLIST — three deliberate
+  steps, never automatic.
 - One-off images (a screenshot for a bug report) should be deleted again once
   they served their purpose — say so instead of silently leaving clutter.
 - Before publishing an image, LOOK at it: network addresses, private project
@@ -62,6 +66,6 @@ yours. Confirm with the user which file is which before using them.
 ## Notes
 
 - Only real images are accepted (checked by content, not by extension), max
-  15 MB each; names are sanitised, nothing can escape `docs/images/`.
+  15 MB each; names are sanitised, nothing can escape `uploads/`.
 - The page needs the board's password when LAN mode is on — the phone stays
   logged in for 30 days.

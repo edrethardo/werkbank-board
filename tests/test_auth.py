@@ -6,6 +6,9 @@ import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stubs import posix_only, temp_dir, remove_tree
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from werkbank import auth, guard, setup
@@ -30,11 +33,11 @@ class PasswordTest(unittest.TestCase):
 
 class TokenTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self.secret = auth.load_or_create_secret(self.dir / "secret")
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_token_roundtrip(self):
         t = auth.make_token(self.secret, ttl_seconds=60)
@@ -97,6 +100,50 @@ class LanGuardTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class HostWithoutPortTest(unittest.TestCase):
+    """WB-106: browsers omit the port on the standard port (a board on 80 is
+    reached as ``Host: 10.77.0.50``) — and _split_host's rpartition used to
+    return the hostname AS the port, locking a board on port 80 out of itself.
+    An absent Host port means 'the connection's own port', so nothing extra may
+    be granted: a board on 8765 still refuses ``Host: 10.77.0.50``."""
+
+    def test_host_without_port_passes_its_own_standard_port_in_lan_mode(self):
+        ok, reason = guard.check_read({"Host": "10.77.0.50"}, 80, lan=True)
+        self.assertTrue(ok, reason)
+
+    def test_host_without_port_means_the_connections_own_port(self):
+        # No port in Host = "whatever port we are actually talking on" —
+        # that is the board's own port, so it passes on any port.
+        ok, reason = guard.check_read({"Host": "10.77.0.50"}, 8765, lan=True)
+        self.assertTrue(ok, reason)
+        ok, reason = guard.check_read({"Host": "127.0.0.1"}, 8765)
+        self.assertTrue(ok, reason)
+        ok, reason = guard.check_read({"Host": "localhost"}, 8765)
+        self.assertTrue(ok, reason)
+
+    def test_explicit_port_behaves_as_before(self):
+        for host in ("10.77.0.50:80", "127.0.0.1:8765"):
+            ok, _ = guard.check_read({"Host": host}, int(host.rsplit(":", 1)[1]),
+                                     lan=True)
+            self.assertTrue(ok, host)
+        ok, _ = guard.check_read({"Host": "10.77.0.50:9999"}, 80, lan=True)
+        self.assertFalse(ok)
+
+    def test_ipv6_with_and_without_port(self):
+        ok, _ = guard.check_read({"Host": "[::1]:80"}, 80)
+        self.assertTrue(ok)
+        ok, _ = guard.check_read({"Host": "[::1]"}, 80)
+        self.assertTrue(ok)
+        ok, reason = guard.check_read({"Host": "[2606:4700:4700::1111]"}, 8765, lan=True)
+        self.assertFalse(ok, reason)          # public IPv6 stays refused
+        ok, _ = guard.check_read({"Host": "[fe80::1]"}, 8765, lan=True)
+        self.assertTrue(ok)                   # link-local (fe80::/10) is "private" in Python
+        ok, _ = guard.check_read({"Host": "[2606:4700:4700::1111]:80"}, 80, lan=True)
+        self.assertFalse(ok)          # public IPv6 stays refused
+        ok, _ = guard.check_read({"Host": "[10.77.0.50]:80"}, 80, lan=True)
+        self.assertTrue(ok)
+
+
 class ConfigCommandTest(unittest.TestCase):
     """WB-50: a stranger must be able to set the password and switch LAN mode
     without writing Python."""
@@ -104,19 +151,20 @@ class ConfigCommandTest(unittest.TestCase):
     def setUp(self):
         import json, tempfile
         from pathlib import Path
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self.cfg = self.dir / "config.json"
-        self.cfg.write_text(json.dumps({"port": 8765, "default_project": "/tmp"}))
+        self.cfg.write_text(
+            json.dumps({"port": 8765, "default_project": "/tmp"}), encoding="utf-8")
 
     def tearDown(self):
         import shutil
-        shutil.rmtree(self.dir, ignore_errors=True)
+        remove_tree(self.dir)
 
     def test_set_password_stores_only_the_hash(self):
         from werkbank import auth, setup
         setup.set_password(self.cfg, "Korrekt-Pferd-Batterie")
         import json
-        cfg = json.loads(self.cfg.read_text())
+        cfg = json.loads(self.cfg.read_text(encoding="utf-8"))
         self.assertNotIn("Korrekt", json.dumps(cfg))
         self.assertTrue(auth.verify_password("Korrekt-Pferd-Batterie",
                                              cfg["password_hash"]))
@@ -138,12 +186,12 @@ class ConfigCommandTest(unittest.TestCase):
         from werkbank import setup
         setup.set_password(self.cfg, "geheim-genug-123")
         msg = setup.set_lan(self.cfg, True)
-        cfg = json.loads(self.cfg.read_text())
+        cfg = json.loads(self.cfg.read_text(encoding="utf-8"))
         self.assertTrue(cfg["lan"])
         self.assertEqual(cfg["host"], "0.0.0.0")
         self.assertIn(":8765", msg)                  # tells the phone address
         setup.set_lan(self.cfg, False)
-        cfg = json.loads(self.cfg.read_text())
+        cfg = json.loads(self.cfg.read_text(encoding="utf-8"))
         self.assertFalse(cfg["lan"])
         self.assertEqual(cfg["host"], "127.0.0.1")
 
@@ -156,13 +204,13 @@ class ChangingThePasswordEndsSessionsTest(unittest.TestCase):
     working for its full time to live."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
         self.cfg = self.dir / "config.json"
         self.cfg.write_text('{"port": 8765}', encoding="utf-8")
         self.secret_path = self.dir / "session-secret"
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_an_old_cookie_stops_working(self):
         secret = auth.load_or_create_secret(self.secret_path)
@@ -185,6 +233,11 @@ class ChangingThePasswordEndsSessionsTest(unittest.TestCase):
         msg = setup.set_password(self.cfg, "pw", secret_path=self.secret_path)
         self.assertIn("abgemeldet", msg)
 
+    @posix_only
     def test_the_new_secret_is_private(self):
         setup.set_password(self.cfg, "pw", secret_path=self.secret_path)
         self.assertEqual(oct(self.secret_path.stat().st_mode)[-3:], "600")
+
+
+if __name__ == "__main__":
+    unittest.main()

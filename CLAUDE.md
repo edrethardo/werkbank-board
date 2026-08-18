@@ -19,10 +19,19 @@ onboarding dialog in plain German, one step at a time:
    unclear, claims it (in_arbeit), works it, and reports back into the ticket
    (review). This needs the `werkbank-pull-ticket` skill installed at user level
    (`~/.claude/skills/`).
-3. **Offer the skill install.** If `~/.claude/skills/werkbank-pull-ticket/` does
-   not exist, offer to install it by copying
-   `.claude/skills/_user-level/werkbank-pull-ticket/` there. Install only after
-   the user says yes; if it is already installed, say so and skip.
+3. **Registering further projects.** Mention that a NEW project does not have to
+   be added at the board: its own session registers itself when the user says
+   „registriere dieses Projekt bei der Werkbank“ (`werkbank-register-project`
+   skill; the board picks the new project up without a restart).
+4. **Offer the skill install.** For each of `werkbank-pull-ticket` and
+   `werkbank-register-project`: if `~/.claude/skills/<name>/` does not exist,
+   offer to install it by copying `.claude/skills/_user-level/<name>/` there.
+   Install only after the user says yes; if it is already installed, say so and
+   skip. Both carry the Werkbank's absolute path in SEVERAL places (five in
+   `werkbank-pull-ticket`) — adapt EVERY occurrence in the installed copy,
+   then grep the installed file for the placeholder to be sure none is left.
+   Adapting only the first line installs a skill whose later commands point
+   nowhere (found by an adversarial review, 2026-08-18).
    (Historical note: an internal `staged-skills/` hand-off area existed while
    the skill was being built and is documented in `docs/dev/`; it is not part
    of the public copy and must not be referenced from user-facing paths.)
@@ -81,4 +90,5 @@ Record the choice and its why in `docs/dev/stack.md` when `src/` gets its first 
 - `.claude/skills/` — this tool's skills, project-local (includes the developer-agent
   kit skills; updates arrive via the `syncing-the-kit` skill and `.developer-agent.json`).
   `_user-level/` is Werkbank's OWN delivery area for skills that target projects
-  install (e.g. `werkbank-pull-ticket`) — not part of the kit.
+  install (`werkbank-pull-ticket`, `werkbank-register-project`, …) — not part
+  of the kit.

@@ -8,6 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stubs import temp_dir, remove_tree
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from werkbank import store
@@ -15,10 +18,10 @@ from werkbank import store
 
 class NumberReuseTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = temp_dir()
 
     def tearDown(self):
-        shutil.rmtree(self.dir)
+        remove_tree(self.dir)
 
     def test_deleted_highest_number_is_not_reused(self):
         store.create_ticket(self.dir, title="eins", description="")
@@ -41,7 +44,7 @@ class NumberReuseTest(unittest.TestCase):
         self.assertEqual(t.id, "WB-2")
 
     def test_garbage_counter_is_ignored(self):
-        (self.dir / ".highest-id").write_text("kaputt\n")
+        (self.dir / ".highest-id").write_text("kaputt\n", encoding="utf-8")
         t = store.create_ticket(self.dir, title="eins", description="")
         self.assertEqual(t.id, "WB-1")
 
@@ -66,7 +69,7 @@ print(t.id)
 
 class ConcurrentCreateTest(unittest.TestCase):
     def test_two_processes_never_share_an_id(self):
-        d = tempfile.mkdtemp()
+        d = str(temp_dir())
         try:
             src = str(Path(__file__).resolve().parent.parent / "src")
             code = CREATE_SNIPPET.format(src=src, d=d)
@@ -77,7 +80,7 @@ class ConcurrentCreateTest(unittest.TestCase):
             self.assertTrue(all(p.returncode == 0 for p in procs), ids)
             self.assertEqual(len(set(ids)), 2, f"id doppelt vergeben: {ids}")
         finally:
-            shutil.rmtree(d)
+            remove_tree(d)
 
 
 if __name__ == "__main__":

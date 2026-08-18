@@ -45,6 +45,22 @@ Do NOT hand-edit `host`/`lan` in `config.json`. The supported path is
 REFUSES TO START on a network address without a password, so a hand-edit does
 not silently expose anything — it just breaks the board's start.
 
+## Not on Linux? (macOS, Windows)
+
+`systemctl` exists only on Linux. The board itself is cross-platform — only the
+autostart is not:
+
+- **macOS:** `python3 src/werkbank/server.py` in a terminal, or a `launchd`
+  plist for autostart. `setsid` does not exist there; use
+  `nohup python3 src/werkbank/server.py >/tmp/werkbank.log 2>&1 &`.
+- **Windows:** `py -3 src\werkbank\server.py` (or `python`). For autostart put
+  a shortcut in the Startup folder (README §6). There is no `python3` command
+  and no `setsid`.
+
+Everything below about restarting after code changes applies on all three: the
+server is one process, `board.html` is re-read per request (page reload is
+enough), `server.py` / `store.py` / `dispatch.py` / `config.json` need a restart.
+
 ## Fallback without systemd (unit missing/broken)
 
 `(setsid python3 src/werkbank/server.py > /tmp/werkbank-board.log 2>&1 &)`

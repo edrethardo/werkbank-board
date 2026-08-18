@@ -1,0 +1,78 @@
+"""Test harness (WB-108): run the REAL board server in a subprocess with an
+isolated config and tickets dir, so composition tests exercise the actual
+module-level wiring (CONFIG, session secret, login gate) — no patching.
+A removed auth check in the handler, not a stub, is what turns a test red.
+
+The test file points this process at a temp config BEFORE the board module is
+imported (WERKBANK_TEST_CONFIG), so module-level load_config() stays as the
+code's own wiring does it. Only the ticket storage path is redirected, via a
+subclass that inherits every routing branch from server.Handler.
+
+Usage: python3 src/werkbank/_serve_for_tests.py <port> <tickets_dir>
+"""
+import os
+import sys
+import threading
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Isolated state dir: the harness must not read or create the user's
+# session-secret or agent logs.
+_tmp_state = Path(__file__).resolve().parent / "_test_state"
+_tmp_state.mkdir(parents=True, exist_ok=True)
+os.environ["XDG_STATE_HOME"] = str(_tmp_state)
+os.environ["WERKBANK_TEST_CONFIG"] = sys.argv[1] if len(sys.argv) > 1 else ""
+
+from werkbank import server  # noqa: E402  module-level wiring runs here
+
+
+def main():
+    port = int(sys.argv[2])
+    server.TICKETS_DIR = Path(sys.argv[3])
+
+    class TestHandler(server.Handler):
+        def do_GET(self):
+            if self.path == "/__ready__":
+                self._send(200, {"ok": True})
+                return
+            server.Handler.do_GET(self)
+
+        def do_POST(self):
+            if self.path == "/__ready__":
+                self._send(200, {"ok": True})
+                return
+            server.Handler.do_POST(self)
+
+    from http.server import ThreadingHTTPServer
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), TestHandler)
+
+    def serve():
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+
+    # Wait until the socket actually answers, then tell the test file.
+    last = None
+    for _ in range(200):
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/__ready__", timeout=1) as r:
+                if r.status == 200:
+                    print("READY", flush=True)
+                    t.join()
+                    return
+        except Exception as e:
+            last = e
+            import time
+            time.sleep(0.05)
+    raise SystemExit(f"harness never became ready: {last}")
+
+
+if __name__ == "__main__":
+    main()

@@ -27,10 +27,23 @@ directory alone instead of deleting what it does not have:
 
     rsync -a --delete --exclude=.git \
           --exclude='docs/journal' --exclude='docs/journal/**' \
+          --exclude='__pycache__' --exclude='*.pyc' \
           dist/werkbank-board/ "$clone/"
 
 Without those two excludes, `--delete` removes all 44 entries — a silent
 deletion nobody asked for, and the README points at them.
+
+The two bytecode excludes are not paranoia either. `publish-clean-copy.py`
+purges compiled files at the END of a build — but anyone who then runs the
+suite INSIDE `dist/` (to read the export's own test count, say) recreates
+them, and a `.pyc` embeds the absolute source path it was compiled from:
+
+    strings dist/werkbank-board/src/werkbank/__pycache__/auth.cpython-310.pyc
+    /home/<owner>/code/agent_ticket/dist/werkbank-board/src/werkbank/auth.py
+
+Found by an adversarial review on 2026-08-18, in a build that had passed all
+gates: the purge had run at 10:46 and the manual test run recreated the files
+at 10:54. Every gate here is text-based and blind to bytecode.
 
 The README describes them as a sample that stops at 1.0. Keep that true: do not
 start adding new entries there by hand.

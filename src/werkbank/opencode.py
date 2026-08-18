@@ -11,9 +11,12 @@ retry with the failing output fed back, and a second red escalates to Claude.
 
 from __future__ import annotations
 
+import inspect
+import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import time
 import tempfile
@@ -46,6 +49,14 @@ def _resolve_bin(name: str, which=shutil.which, candidates=None):
 # WB-52: hardcoded 'a private $HOME path' strings would leak into every published
 # copy. Resolved once at import via PATH + the usual install locations.
 OPENCODE_TASK = _resolve_bin("opencode-task")
+# WB-219: the DeepSeek harness is the second runner of the LOCAL lane. Its
+# wrapper was written to the SAME contract as opencode-task on purpose (task
+# on stdin, the final text and nothing else on stdout, exit 0/3/4/5), so the
+# board keeps ONE code path and ONE exit-code mapping instead of two. What
+# differs lives inside the wrapper — dsh reads its task only from argv, so
+# dsh-task spools stdin to a file and passes the reference; the board never
+# sees that.
+DSH_TASK = _resolve_bin("dsh-task")
 CLAUDE_BIN = _resolve_bin("claude")
 ENDPOINT_DOWN = 4
 BAD_DIRECTORY = 3
@@ -110,7 +121,7 @@ def _tail(text: str, limit: int = MAX_GATE_OUTPUT) -> str:
 
 
 def _run_grouped(cmd, input=None, capture_output=True, text=True, timeout=None,
-                 cwd=None):
+                 cwd=None, env=None, on_pid=None):
     """subprocess.run stand-in that owns the WHOLE process group (WB-94).
 
     `subprocess.run(timeout=…)` kills only the direct child; the WB-92 incident
@@ -119,18 +130,41 @@ def _run_grouped(cmd, input=None, capture_output=True, text=True, timeout=None,
     blocked). Each run gets its own session; a timeout signals the group:
     TERM, short grace, KILL — then the TimeoutExpired is re-raised. On
     platforms without process groups (Windows) it degrades to killing the
-    direct child, which is what subprocess.run did anyway."""
+    direct child, which is what subprocess.run did anyway.
+
+    WB-135: on the SUCCESSFUL path too — after `communicate()` returned, the
+    direct child is dead, but any grandchild spawned in this session can
+    survive it. In production this kept an opencode-task descendant alive for
+    minutes after its ticket was marked review, holding the GPU and the lane's
+    worker. Signalling the group unconditionally reaps them; on an already-empty
+    group `killpg` raises ProcessLookupError and is caught. The tiny PID-reuse
+    window (a fresh process happens to have adopted this pgid in the microseconds
+    between communicate returning and the killpg call) is preferable to a
+    lingering grandchild that keeps the lane blocked."""
     proc = subprocess.Popen(
         cmd, cwd=cwd,
         stdin=subprocess.PIPE if input is not None else None,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text,
+        env=env,
         start_new_session=hasattr(os, "killpg"))
+    pgid = proc.pid   # start_new_session=True makes the child its own pgid
+    if on_pid is not None:
+        try:
+            on_pid(proc.pid)
+        except Exception:
+            pass
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
         raise
+    finally:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 def _kill_group(proc, grace=2.0):
@@ -165,18 +199,68 @@ def run_gate(gate: str, project: str, run=None, timeout=None):
     return proc.returncode == 0, out
 
 
-def run_task(t, task_text: str, run=None, timeout=None):
+def run_task(t, task_text: str, run=None, timeout=None, on_pid=None,
+             owner=None):
     """Hand the task to the local model. Returns (returncode, final text).
 
     The task goes on STDIN. It must NOT be argv: `opencode-task` reads the task
     with `$(cat)` and treats its second argument as the MODEL ID, so passing the
     text positionally sends an empty task and silently mislabels the model.
-    """
+
+    WB-142: `WERKBANK_TICKET_ID` is set in the run's environment so a stray
+    opencode process on the system can be traced back to the ticket that owns
+    it — `cat /proc/<pid>/environ | tr '\\0' '\\n' | grep WERKBANK` is enough,
+    no cmdline parsing (opencode-task and opencode share their argv shape).
+    `owner` (the dispatching board's tickets dir) is stamped alongside as
+    WERKBANK_TICKETS_DIR: ticket ids repeat across boards, so the id alone
+    must never be enough for a reaper to claim — let alone kill — a run."""
     run = run or _run_grouped
-    proc = run([OPENCODE_TASK, getattr(t, "project", "")], input=task_text,
-               capture_output=True, text=True,
-               timeout=timeout if timeout is not None else TASK_TIMEOUT)
+    kwargs = _run_kwargs(run, timeout, on_pid, t, owner)
+    proc = run([runner_for(getattr(t, "assignee", "")),
+                getattr(t, "project", "")], input=task_text,
+               capture_output=True, text=True, **kwargs)
     return proc.returncode, (getattr(proc, "stdout", "") or "").strip()
+
+
+def runner_for(assignee) -> str:
+    """WB-219: which wrapper runs this ticket. Unknown names fall back to
+    opencode-task — the caller has already passed `known_assignee`, and a
+    silently wrong runner is worse than the known one.
+
+    Reads the module attributes at CALL time, not through a dict built at
+    import: tests point the lane at a stand-in by assigning
+    `opencode.OPENCODE_TASK`, and a frozen mapping would ignore that — the
+    first version of this function did, and the lane-self-heal test failed
+    at once (which is exactly what that test is for)."""
+    if (assignee or "").strip().lower() == "dsh":
+        return DSH_TASK
+    return OPENCODE_TASK
+
+
+def _run_kwargs(run, timeout, on_pid, t, owner=None):
+    """Only send `env`/`on_pid` to runners that accept them; fake runners in
+    tests (subprocess.run, hand-crafted mocks) do not, and we still want the
+    real runs to carry the identifying env even when a test injects its own
+    `run=`. Signature-sniffed so injected fakes stay simple."""
+    kwargs = {"timeout": timeout if timeout is not None else TASK_TIMEOUT}
+    try:
+        params = inspect.signature(run).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "env" in params or _accepts_var_keywords(params):
+        env = dict(os.environ)
+        env["WERKBANK_TICKET_ID"] = getattr(t, "id", "") or ""
+        if owner:
+            env["WERKBANK_TICKETS_DIR"] = str(Path(owner).resolve())
+        kwargs["env"] = env
+    if on_pid is not None and ("on_pid" in params or _accepts_var_keywords(params)):
+        kwargs["on_pid"] = on_pid
+    return kwargs
+
+
+def _accepts_var_keywords(params) -> bool:
+    return any(getattr(p, "kind", None) == inspect.Parameter.VAR_KEYWORD
+               for p in params.values())
 
 
 def clip_diff(diff: str):
@@ -205,20 +289,102 @@ def review_command() -> list:
     # No --bare: it forces ANTHROPIC_API_KEY auth and never reads OAuth, which
     # would break or re-bill a subscription account.
     # The prompt is NOT in argv — see clip_diff for why.
+    # WB-170: `--output-format json` so the review reports its own bill —
+    # the CLI's result event carries `total_cost_usd` and `usage`. Without
+    # this the review is the one code path this project never measured.
     return [CLAUDE_BIN, "-p", "--model", REVIEW_MODEL,
             "--disallowedTools", REVIEW_TOOLS_OFF,
+            "--output-format", "json",
             "--append-system-prompt",
             "Du hast KEINE Tools. Antworte in einem Zug allein aus dem Text."]
 
 
-def review_diff(criteria: str, diff: str, run=subprocess.run):
-    """One bounded, tool-less turn in an empty directory. (verdict, truncated)."""
+def _parse_review_output(stdout: str):
+    """WB-170: split (text, usage-dict) from `claude -p --output-format json`.
+
+    The CLI emits a single JSON object with `.result` (the model's answer),
+    `.usage` (input/output/cache tokens) and `.total_cost_usd`. A parse
+    failure treats the whole stdout as the text and returns `None` for
+    usage — the review report still lands on the ticket, only the cost
+    footer is missing that one time."""
+    stdout = (stdout or "").strip()
+    try:
+        obj = json.loads(stdout)
+    except (ValueError, TypeError):
+        return stdout, None
+    if not isinstance(obj, dict):
+        return stdout, None
+    text = str(obj.get("result", "") or "").strip() or stdout
+    usage_raw = obj.get("usage") or {}
+    if not isinstance(usage_raw, dict):
+        usage_raw = {}
+    cost = obj.get("total_cost_usd")
+    usage = {
+        "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
+        "tokens_in": int(usage_raw.get("input_tokens") or 0),
+        "tokens_out": int(usage_raw.get("output_tokens") or 0),
+        "tokens_cache": int((usage_raw.get("cache_creation_input_tokens") or 0)
+                            + (usage_raw.get("cache_read_input_tokens") or 0)),
+    }
+    return text, usage
+
+
+def review_diff(criteria: str, diff: str, run=None):
+    """One bounded, tool-less turn in an empty directory.
+    Returns (verdict, truncated, usage) — usage is a dict per
+    `_parse_review_output`, or None if the CLI produced non-JSON output.
+    WB-171: default is `_run_grouped`, so a claude-CLI grandchild that
+    outlives the direct child gets reaped with the group instead of
+    holding stdout open past the REVIEW_TIMEOUT."""
+    run = run or _run_grouped
     clipped, truncated = clip_diff(diff)
     with tempfile.TemporaryDirectory(prefix="werkbank-review-") as sandbox:
         proc = run(review_command(), cwd=sandbox,
                    input=review_prompt(criteria, clipped),
                    capture_output=True, text=True, timeout=REVIEW_TIMEOUT)
-    return (getattr(proc, "stdout", "") or "").strip(), truncated
+    text, usage = _parse_review_output(getattr(proc, "stdout", "") or "")
+    return text, truncated, usage
+
+
+def adversarial_review_prompt(ticket_body: str, diff: str) -> str:
+    """WB-140: the on-demand button asks a HARDER reviewer than the automatic
+    opencode gate — actively hunt for bugs, silent gaps, security issues,
+    and dishonest reporting. One tool-less turn (see review_command).
+    WB-172: hard 200-word ceiling on the output — 26 measured tickets
+    averaged 21.6k output tokens because the prompt named neither format
+    nor limit. The findings-with-file:line format is where the value is;
+    the prose around them was pure cost."""
+    return (
+        "Du bist ein adversarialer Code-Reviewer. Du sollst NICHT bestätigen — "
+        "such nach dem, was fehlt: übersehene Fälle, stille Zusagen im "
+        "Ergebnistext ohne Codebeleg, Sicherheits- oder Nebenläufigkeits-"
+        "Fallen, Tests die das Verhalten nur pinnen ohne es zu prüfen, "
+        "Copy-Paste-Fehler.\n\n"
+        "Antworte in ≤200 Wörtern. Jedes Finding als eine Zeile "
+        "`- <file>:<line> — <konkretes Fehlerszenario in einem Satz>`. "
+        "Keine Präambel, keine Schluss-Zusammenfassung, keine Wiederholung "
+        "der Ticket-Beschreibung. Wenn nichts zu meckern ist: ein Satz. "
+        "Antwort auf Deutsch.\n\n"
+        "Ticket:\n" + ticket_body + "\n\nDiff:\n" + diff
+    )
+
+
+def adversarial_review(ticket_body: str, diff: str, run=None):
+    """Fresh claude instance, no tools, adversarial system prompt. Returns
+    (report_text, truncated, usage) — WB-170: usage is the parsed cost/token
+    dict from `_parse_review_output`, or None on non-JSON output. Uses the
+    same review_command as the automatic gate — the model choice and safety
+    flags stay consistent. WB-171: default is `_run_grouped`, so a hanging
+    grandchild past REVIEW_TIMEOUT does not keep `_REVIEWS_RUNNING`'s
+    per-ticket lock held until the next server restart."""
+    run = run or _run_grouped
+    clipped, truncated = clip_diff(diff)
+    with tempfile.TemporaryDirectory(prefix="werkbank-adv-review-") as sandbox:
+        proc = run(review_command(), cwd=sandbox,
+                   input=adversarial_review_prompt(ticket_body, clipped),
+                   capture_output=True, text=True, timeout=REVIEW_TIMEOUT)
+    text, usage = _parse_review_output(getattr(proc, "stdout", "") or "")
+    return text, truncated, usage
 
 
 def head_sha(project: str, run=subprocess.run):
@@ -326,13 +492,40 @@ def no_gate_message(t, cfg: dict) -> str:
             "(z. B. \u201edie Tests laufen durch\u201c) — ich trage es ein.")
 
 
-def work_ticket(t, cfg: dict, run=None, on_progress=None) -> Outcome:
+def _asks_a_question(text: str) -> bool:
+    """WB-220: the model's raw text starts with the RÜCKFRAGE marker.
+    Delegates to `dispatch.is_query_result` so both lanes share one
+    definition of "the agent is asking, not answering". Lazy import:
+    `dispatch` imports `opencode`, so an eager import would cycle."""
+    from werkbank.dispatch import is_query_result
+    return is_query_result(text)
+
+
+def _rueckfrage_refusal(worker: str, text: str) -> str:
+    """WB-220: the message that lands on a fehlgeschlagen local-lane ticket
+    whose model asked a question. Names WHY (one-shot wrapper, no session to
+    resume), WHAT the user's option is (`claude` is the only assignee that
+    can pause), and preserves the model's own text so the question is not
+    lost — the whole point of the ticket."""
+    return (
+        f"Nicht bearbeitet — der Bearbeiter `{worker}` kann keine Rückfragen "
+        "stellen. Der Lauf hat mit einer Frage geantwortet statt zu arbeiten, "
+        "und sein Wrapper startet jede Aufgabe frisch (keine Sitzung, die eine "
+        "Antwort fortsetzen könnte). Deine Antwort ginge ins Nichts.\n\n"
+        "Nur `claude` kann pausieren und nachfragen. Umstellen — oder die "
+        "Frage vorab klären und das Ticket präziser fassen.\n\n"
+        "Text des Laufs:\n" + text)
+
+
+def work_ticket(t, cfg: dict, run=None, on_progress=None, on_pid=None,
+                owner=None) -> Outcome:
     run = run or _run_grouped
     name, gate = resolve_gate(t, cfg)
     if not gate:
         return Outcome(result=no_gate_message(t, cfg), status="fehlgeschlagen")
     try:
-        return _work_ticket_inner(t, cfg, run, on_progress, name, gate)
+        return _work_ticket_inner(t, cfg, run, on_progress, name, gate, on_pid,
+                                  owner)
     except subprocess.TimeoutExpired:
         # WB-94: an exceeded budget is an honest, explained failure — not an
         # "interner Fehler der Werkbank" bubbling out of the worker.
@@ -346,7 +539,8 @@ def work_ticket(t, cfg: dict, run=None, on_progress=None) -> Outcome:
             status="fehlgeschlagen")
 
 
-def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate) -> Outcome:
+def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate,
+                       on_pid=None, owner=None) -> Outcome:
 
     project = getattr(t, "project", "") or cfg.get("default_project", "")
     before = head_sha(project, run=run)
@@ -364,25 +558,30 @@ def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate) -> Outcome:
             except Exception:
                 pass
 
+    # WB-219: which local worker this is — the progress line and the
+    # "wrapper missing" message must not tell a dsh user to fix opencode.
+    worker = (getattr(t, "assignee", "") or "opencode").strip().lower()
+
     def left():
         return max(1.0, deadline - time.monotonic())
 
     for attempt in (1, 2):
         attempts = attempt
-        say(f"opencode, Versuch {attempt}")
+        say(f"{worker}, Versuch {attempt}")
         try:
-            rc, text = run_task(t, task, run=run, timeout=left())
+            rc, text = run_task(t, task, run=run, timeout=left(), on_pid=on_pid,
+                                owner=owner)
         except (FileNotFoundError, NotADirectoryError):
             # WB-52: the wrapper is a local install, not part of this project.
             # Without this, a fresh checkout answers "interner Fehler der
             # Werkbank" — which blames the board for a missing prerequisite.
             return Outcome(
-                result=(f"Nicht gestartet — das Hilfsprogramm `{OPENCODE_TASK}` "
-                        "wurde auf diesem Rechner nicht gefunden. Der Bearbeiter "
-                        "`opencode` braucht ein lokales Modell und dieses "
-                        "Startprogramm; ohne das kann nur `claude` arbeiten. "
-                        "Ticket auf `claude` umstellen oder das Programm "
-                        "einrichten."),
+                result=(f"Nicht gestartet — das Hilfsprogramm "
+                        f"`{runner_for(worker)}` wurde auf diesem Rechner nicht "
+                        f"gefunden. Der Bearbeiter `{worker}` braucht ein lokales "
+                        "Modell und dieses Startprogramm; ohne das kann nur "
+                        "`claude` arbeiten. Ticket auf `claude` umstellen oder "
+                        "das Programm einrichten."),
                 status="fehlgeschlagen", attempts=attempts)
         if rc == ENDPOINT_DOWN:
             # Infrastructure, not the ticket's fault: no failure is recorded.
@@ -396,6 +595,15 @@ def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate) -> Outcome:
                 result=(f"Nicht gestartet — das Projektverzeichnis `{project}` "
                         "gibt es nicht. Bitte im Ticket das richtige Projekt "
                         "auswählen."),
+                status="fehlgeschlagen", attempts=attempts)
+        if _asks_a_question(text):
+            # WB-220: the local wrapper is one-shot — `dsh --profile headless`
+            # and opencode-task each spawn a fresh conversation, so nothing
+            # would carry the user's answer back to the model that asked. A
+            # rueckfrage from here would vanish into a review-column result;
+            # refuse the run instead, name the reason, and preserve the text.
+            return Outcome(
+                result=_rueckfrage_refusal(worker, text),
                 status="fehlgeschlagen", attempts=attempts)
         tool_failed = rc not in (0, NO_FINAL_TEXT)
         transcript.append(f"### Versuch {attempt} (opencode)\n{text or '(keine Ausgabe)'}")
@@ -432,7 +640,8 @@ def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate) -> Outcome:
         diff = diff_since(project, before, run=run)
         if diff.strip():
             say("Review (Claude, nur Diff)")
-            verdict, truncated = review_diff(getattr(t, "body", ""), diff, run=run)
+            verdict, truncated, _usage = review_diff(
+                getattr(t, "body", ""), diff, run=run)
             if verdict:
                 note = ("\n\n_Hinweis: Der Diff war zu gross und wurde gekuerzt — "
                         "das Review deckt nur den Anfang ab._" if truncated else "")

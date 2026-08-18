@@ -11,6 +11,7 @@ by their magic bytes.
 
 import base64
 import binascii
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -68,8 +69,20 @@ def save_image(target_dir, original_name: str, raw: bytes,
         raise ValueError("Das ist kein Bild (PNG, JPEG, GIF oder HEIC erwartet).")
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    name = safe_name(original_name, ext)
-    while (target_dir / name).exists():            # never overwrite
-        name = safe_name(original_name + "-1", ext)
-    (target_dir / name).write_bytes(raw)
-    return name
+    base = safe_name(original_name, ext)
+    stem = base[: -len(ext)]
+    # WB-104: the old loop retried with the SAME fallback name (busy-spin when
+    # two uploads share a second), and exists->write was not atomic. A numbered
+    # suffix gives a fresh candidate per attempt; O_EXCL makes create-or-fail
+    # atomic, so two concurrent uploads can never write the same file.
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    for attempt in range(1, 1001):
+        name = base if attempt == 1 else f"{stem}-{attempt}{ext}"
+        try:
+            fd = os.open(target_dir / name, flags, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        return name
+    raise ValueError("Kein freier Dateiname gefunden — bitte den Upload-Ordner aufräumen.")
