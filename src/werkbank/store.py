@@ -62,15 +62,28 @@ TYPES = ["aufgabe", "bug", "epic"]
 # WB-170: `review_cost_usd` is the cumulative $ spent by the on-demand
 # Review-Bot on this ticket (multiple clicks add up); empty = never
 # reviewed OR the CLI returned non-JSON that one time.
+# WB-226: `gate_gap` is free-form German prose naming what the configured
+# check does NOT cover for this ticket (typical: UI/animation/layout,
+# where a green "compiles and unchanged logic still runs" gate does not
+# equal an accepted result). Non-empty → dispatch refuses to autostart
+# and bounces back to Offen with the gap text, for BOTH lanes. Empty →
+# normal behaviour.
 KEYS = ["id", "title", "type", "status", "assignee", "project", "priority",
-        "nach", "nicht_mit", "fork", "gate", "review", "version", "session",
-        "handover", "handover_at", "handover_expired", "limit_until", "pid",
-        "answer", "tokens_in", "tokens_out", "tokens_cache", "cost_usd",
-        "duration_s", "queue_pos", "epic", "interactive", "review_cost_usd",
+        "nach", "nicht_mit", "fork", "gate", "gate_gap", "review", "version",
+        "session", "handover", "handover_at", "handover_expired",
+        "limit_until", "pid", "answer", "tokens_in", "tokens_out",
+        "tokens_cache", "cost_usd", "duration_s", "queue_pos", "epic",
+        "interactive", "review_cost_usd", "orphaned", "backend",
         "claimed_at",
         "created", "updated"]
 FORK_VALUES = ["ja", "nein"]
 INTERACTIVE_VALUES = ["ja", "nein"]
+# WB-238: per-ticket choice for the dsh runner (opencode ignores it; a
+# `backend` value on an opencode ticket is rejected, not silently dropped).
+# "" and "local" mean the local model (default, current behaviour); "claude"
+# routes the run through the local Claude CLI and thus the subscription
+# quota — the surface the form warning names.
+BACKEND_VALUES = ["", "local", "claude"]
 # A gate NAME, never a command: no shell metacharacters can survive this.
 GATE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
 
@@ -92,6 +105,9 @@ class Ticket:
     nicht_mit: str = ""   # must not be worked at the same time as these
     fork: str = "nein"    # ja = agent works on a fork of the ticket session
     gate: str = ""        # shell command that decides "fertig" — NEVER settable via the API
+    gate_gap: str = ""    # WB-226: what the gate does NOT cover — non-empty blocks autostart
+    orphaned: str = ""    # WB-230: "ja" once detected as a live orphan — no autostart, user decides
+    backend: str = ""     # WB-238: dsh runner backend — "" | "local" | "claude"
     review: str = ""      # "nein" skips the paid diff review after a green gate
     version: str = "1"    # write counter for lost-update detection (WB-9)
     session: str = ""     # session id of the run that worked this ticket (WB-20)
@@ -292,7 +308,8 @@ def _read_with_retry(path, attempts: int = 5, pause: float = 0.05) -> str:
 OPENCODE_SECTIONS = ("## Tests / Abnahme", "## Fertig, wenn")
 
 
-def opencode_ticket_gaps(ticket, gates_configured: bool = True) -> list:
+def opencode_ticket_gaps(ticket, gates_configured: bool = True,
+                         gate: str = None) -> list:
     """What a ticket still lacks before a LOCAL model can work it (WB-197).
 
     opencode is a small model. It does not fill gaps, it guesses — and a guess
@@ -317,7 +334,12 @@ def opencode_ticket_gaps(ticket, gates_configured: bool = True) -> list:
     if not re.search(r"^\s*\d+[.)]\s+\S", description, re.M):
         gaps.append("keine nummerierten Schritte — ein kleines Modell braucht "
                     "eine Reihenfolge, keine Absicht")
-    if gates_configured and not (getattr(ticket, "gate", "") or "").strip():
+    # WB-263 round 4: the skill tells the agent to run this against a DRAFT —
+    # a plain string, which has no `gate` attribute, so the check reported the
+    # gate as missing even for a perfect draft and could never say "ready".
+    # The gate is chosen before creation; let the caller say which one.
+    chosen = gate if gate is not None else (getattr(ticket, "gate", "") or "")
+    if gates_configured and not chosen.strip():
         gaps.append("kein `gate:` gesetzt — ohne Prüfung startet das Board das "
                     "Ticket gar nicht")
     return gaps
@@ -397,7 +419,8 @@ def create_ticket(tickets_dir, title: str, description: str, assignee: str = "cl
                   project: str = "", priority: str = "normal",
                   type: str = "aufgabe", nach: str = "", nicht_mit: str = "",
                   fork: str = "nein", gate: str = "", epic: str = "",
-                  interactive: str = "nein") -> Ticket:
+                  interactive: str = "nein", gate_gap: str = "",
+                  backend: str = "") -> Ticket:
     tickets_dir = Path(tickets_dir)
     tickets_dir.mkdir(parents=True, exist_ok=True)
     if priority not in PRIORITIES:
@@ -411,10 +434,26 @@ def create_ticket(tickets_dir, title: str, description: str, assignee: str = "cl
         raise ValueError(f"interactive must be one of {INTERACTIVE_VALUES}")
     if not is_gate_name(gate):
         raise ValueError("gate must be a plain check name")
+    # WB-226: same one-line normalisation as `_update_locked` applies later —
+    # do it here too so the on-disk shape is identical whether the field was
+    # set at create-time or via a follow-up PATCH.
+    gate_gap = re.sub(r"[\r\n]+", " ", gate_gap or "").strip()
+    # WB-238: same validation as `_update_locked` — the only difference is we
+    # know the assignee for sure at create time, so the "backend only on dsh"
+    # check is unambiguous.
+    if backend not in BACKEND_VALUES:
+        raise ValueError(
+            f"backend muss einer von {BACKEND_VALUES} sein — 'local' oder "
+            f"leer heißt lokales Modell, 'claude' route den Lauf über den "
+            f"Claude-CLI und verbraucht Abo-Kontingent.")
+    if backend and (assignee or "").strip().lower() != "dsh":
+        raise ValueError(
+            "backend gilt nur für Tickets mit „Zugewiesen an: dsh“. "
+            "Für claude/opencode-Tickets bitte das Feld leer lassen.")
     with _locked(tickets_dir):
         return _create_locked(tickets_dir, title, description, assignee, project,
                               priority, type, nach, nicht_mit, fork, gate, epic,
-                              interactive)
+                              interactive, gate_gap, backend)
 
 
 def _read_highest_counter(tickets_dir) -> int:
@@ -431,7 +470,7 @@ def _read_highest_counter(tickets_dir) -> int:
 
 def _create_locked(tickets_dir, title, description, assignee, project, priority,
                    type, nach, nicht_mit, fork, gate="", epic="",
-                   interactive="nein") -> Ticket:
+                   interactive="nein", gate_gap="", backend="") -> Ticket:
     nums = [_ticket_number(parse_ticket(p.read_text(encoding="utf-8")).id)
             for p in _paths(tickets_dir)]
     next_num = max(max(nums, default=0), _read_highest_counter(tickets_dir)) + 1
@@ -444,8 +483,10 @@ def _create_locked(tickets_dir, title, description, assignee, project, priority,
         nicht_mit=nicht_mit,
         fork=fork,
         gate=gate,
+        gate_gap=gate_gap,
         epic=epic,
         interactive=interactive,
+        backend=backend,
         assignee=assignee.strip() or "claude",
         project=project,
         priority=priority,
@@ -697,11 +738,11 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
     # makes it settable from the board at all — a settable COMMAND on a
     # LAN-reachable board would be remote code execution.
     allowed = {"title", "type", "status", "assignee", "project", "priority",
-               "nach", "nicht_mit", "fork", "gate", "review", "session",
-               "handover", "handover_at", "handover_expired", "limit_until",
-               "pid", "answer", "tokens_in", "tokens_out", "tokens_cache",
-               "cost_usd", "duration_s", "queue_pos", "epic", "interactive",
-               "claimed_at",
+               "nach", "nicht_mit", "fork", "gate", "gate_gap", "review",
+               "session", "handover", "handover_at", "handover_expired",
+               "limit_until", "pid", "answer", "tokens_in", "tokens_out",
+               "tokens_cache", "cost_usd", "duration_s", "queue_pos", "epic",
+               "interactive", "claimed_at", "orphaned", "backend",
                "review_cost_usd", "body"}
     unknown = set(changes) - allowed
     if unknown:
@@ -730,6 +771,30 @@ def _update_locked(tickets_dir, ticket_id: str, changes: dict,
         raise ValueError(f"fork must be one of {FORK_VALUES}")
     if "interactive" in changes and changes["interactive"] not in INTERACTIVE_VALUES:
         raise ValueError(f"interactive must be one of {INTERACTIVE_VALUES}")
+    if "backend" in changes:
+        val = changes["backend"] or ""
+        if val not in BACKEND_VALUES:
+            raise ValueError(
+                f"backend muss einer von {BACKEND_VALUES} sein — 'local' oder "
+                f"leer heißt lokales Modell, 'claude' route den Lauf über den "
+                f"Claude-CLI und verbraucht Abo-Kontingent.")
+        # WB-238: the field only makes sense for the dsh runner. Reject
+        # rather than silently ignore — the user set it deliberately, we
+        # owe them a clear "wrong assignee" instead of a mystery no-op.
+        if val:
+            eff_assignee = (changes.get("assignee")
+                            or getattr(t, "assignee", "")
+                            or "").strip().lower()
+            if eff_assignee != "dsh":
+                raise ValueError(
+                    "backend gilt nur für Tickets mit „Zugewiesen an: dsh“. "
+                    "Für claude/opencode-Tickets bitte das Feld leer lassen.")
+    if "gate_gap" in changes:
+        # WB-226: frontmatter is one line per field — collapse newlines so a
+        # multi-line paste from the user does not smuggle a bogus field.
+        # Same shape the answer endpoint uses (see dispatch.answer_ticket).
+        changes["gate_gap"] = re.sub(r"[\r\n]+", " ",
+                                     changes["gate_gap"] or "").strip()
     if "review" in changes and changes["review"] not in ("", "ja", "nein"):
         raise ValueError("review must be '', 'ja' or 'nein'")
     if "gate" in changes and not is_gate_name(changes["gate"]):

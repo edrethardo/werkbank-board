@@ -78,7 +78,7 @@ projects do not wait for each other.
 
 ## The review, and why it runs in an empty directory
 
-Measured by the coding_agent session: the same tool-less review costs 5 turns and
+Measured by a peer session: the same tool-less review costs 5 turns and
 $0.117 when run inside the project, because CLAUDE.md, skills and plugin sync
 load ~93k tokens before any work — and 1 turn and $0.056 from a context-free
 directory, still catching a planted `a - b` against "liefert die Summe". The diff

@@ -1,7 +1,7 @@
 # Werkbank
 
 A Jira-like ticket board for [Claude Code](https://claude.com/claude-code) agents —
-built entirely by talking to Claude Code, for a non-technical owner, in two days.
+built entirely by talking to Claude Code, for a non-technical owner. The first working version took two days; what you see here is a week of daily use on top of it.
 
 You (or an agent) write tickets. You drag a ticket to **In Arbeit** — and a Claude
 agent picks it up, works it in the target project, and reports back into the
@@ -27,10 +27,17 @@ lang="de">`. Docs and the changelog are German too; code, commits and
 developer docs are English. Details in [Language](#language) below.
 
 <p align="center">
+  <img src="docs/images/board-desktop.png" alt="Das Board am Rechner: sieben Spalten von Offen bis Erledigt, Ticketkarten mit Bearbeiter, Warteschlangen-Hinweis, Rückfrage-Formular und Annehmen/Ablehnen" width="880">
+  <br>
+  <em>Sieben Spalten von <strong>Offen</strong> bis <strong>Erledigt</strong>.
+  Ein Ticket nach „In Arbeit" ziehen, und ein Agent fängt an; kommt er nicht
+  weiter, landet die Frage als <strong>Rückfrage</strong> direkt auf der Karte.</em>
+</p>
+
+<p align="center">
   <img src="docs/images/board-handy.png" alt="Das Board auf dem Handy: Statusreiter, Ticketkarten mit Starten- und Warteschlangen-Knopf" width="330">
   <br>
-  <em>Das Board auf dem Handy — Status antippen, Ticket starten, fertig.
-  Am Rechner sind es sieben Spalten zum Ziehen.</em>
+  <em>Dasselbe Board auf dem Handy — Status antippen, Ticket starten, fertig.</em>
 </p>
 
 ## What it does
@@ -63,6 +70,14 @@ developer docs are English. Details in [Language](#language) below.
   Claude review over the diff (a few cents), because a local model's own
   "done" is not evidence. Put `review: nein` in the ticket to skip it.
 
+  **When the check cannot prove the work**, say so in the ticket's `gate_gap`
+  field ("that the preview actually appears"). A ticket that names a gap is
+  NOT started automatically — it waits for a human eye instead of going green
+  on the absence of compiler errors. `assignee: dsh` additionally takes
+  `backend: claude`, which runs the same lane through the Claude CLI: it
+  spends quota, leaves the GPU free, and therefore runs in parallel to a local
+  run.
+
   It shells out to a launcher called `opencode-task` (`<project dir>` as
   argv[1], the task on stdin, the final text on stdout, exit 4 = endpoint
   unreachable). `assignee: dsh` is the same lane through a second harness and
@@ -94,18 +109,21 @@ updated further; yours grows from here.)
   terminal, and `claude -p "hi"` must answer. The board shells out to that
   binary; agent runs consume your Claude quota.
 - **Python 3.10+** (standard library only, nothing to install).
+- **Claude Code** on the `PATH`, logged in. The dispatcher reads that CLI's
+  `--output-format stream-json` events and its quota messages, so a future CLI
+  release can change what the board sees. Built and used against **2.1.132**;
+  if a newer CLI behaves oddly, that is the first place to look.
 - **Linux, macOS or Windows.** File locking uses `fcntl` on Unix and `msvcrt`
   on Windows; ticket files always use `\n` line endings, whatever the platform.
   The unit suite **passes** on ubuntu-latest, windows-latest AND macos-latest
-  on every push (`.github/workflows/tests.yml`): 580 tests here. A number of
+  on every push (`.github/workflows/tests.yml`): 665 tests here. A number of
   them skip themselves on Windows and macOS — process groups, signals,
   `/proc`, symlinked credentials — each printing its reason in the log, never
   silently. (Honest caveat: the
   maintainer has no Windows machine. **Nobody has ever STARTED the board on
   Windows or macOS** — CI runs the unit suite there, which is not the same
-  thing. What CI does not exercise at all — the
-  chat-handover watcher and the local-model check (`opencode` and `dsh`), all
-  shell-based — is
+  thing. What CI does not exercise at all — the check behind a local-model
+  ticket (`opencode` and `dsh`), which runs through `/bin/sh` — is
   unproven there, and stated as such below. Reports welcome.)
 - **git**, if you want the ticket history that this design assumes.
 
@@ -141,9 +159,10 @@ database, no build step. Stop it with Ctrl-C.
 (unit-covered, exercised by CI on Linux and Windows). Three things are
 Unix-only:
 
-- The **chat-handover watcher** in the `werkbank-pull-ticket` skill is a
-  `bash` loop — on Windows the fallback background run kicks in instead
-  after `chat_handover_minutes`.
+- **Handing a ticket to an open chat needs a unix socket**, which Windows does
+  not have. The board notices (`NO_SOCKET_SUPPORT`) and goes straight to the
+  background run instead of waiting for a claim that cannot arrive — so
+  Windows works, it just never hands a ticket into a conversation.
 - The **check behind an `opencode` ticket** runs via `/bin/sh -c`, so that
   worker cannot verify its work on Windows. Claude tickets are unaffected.
 - The **systemd** autostart in §6 is Linux-only; macOS uses `launchd`,
@@ -186,17 +205,31 @@ Open the Werkbank folder in Claude Code. The repo ships project skills in
   visibly.
 - *"Starte das Board"* — starts/restarts the server and verifies it answers.
 
-To let **other projects'** Claude sessions pull their own tickets, install the
-two user-level skills once:
+To let **other projects'** Claude sessions take part, install the user-level
+skills once. The five Werkbank skills below live in `.claude/skills/_user-level/`
+alongside copies of the developer-agent kit's own skills; the first two are the
+ones you actually need:
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -r .claude/skills/_user-level/werkbank-pull-ticket ~/.claude/skills/
-cp -r .claude/skills/_user-level/werkbank-report-bug  ~/.claude/skills/
+cp -r .claude/skills/_user-level/werkbank-pull-ticket      ~/.claude/skills/
+cp -r .claude/skills/_user-level/werkbank-register-session ~/.claude/skills/
+# optional, as you need them:
+cp -r .claude/skills/_user-level/werkbank-register-project ~/.claude/skills/
+cp -r .claude/skills/_user-level/werkbank-report-bug       ~/.claude/skills/
+cp -r .claude/skills/_user-level/werkbank-upload-files     ~/.claude/skills/
 ```
 
+| skill | what it lets a session do |
+|---|---|
+| `werkbank-pull-ticket` | find its project's open ticket, claim it, work it, report back |
+| `werkbank-register-session` | make THIS conversation the one the board hands that project's tickets to — needed before any ticket was ever pulled there |
+| `werkbank-register-project` | register a new project with the board from inside that project |
+| `werkbank-report-bug` | turn "that's broken" into a bug ticket with the questions asked |
+| `werkbank-upload-files` | get pictures off a phone into the project |
+
 Each skill sets the Werkbank path in a `WERKBANK=…` line at the top of every
-command block it contains — five of them in `werkbank-pull-ticket`. Adapt
+command block it contains. Adapt
 **all** occurrences to wherever you cloned Werkbank (a find-and-replace of the
 path over the file does it); the path is never hidden inside Python code, only
 ever in that shell assignment.
@@ -289,9 +322,22 @@ pythonw.exe C:\Pfad\zu\werkbank\src\werkbank\server.py
 python3 -m unittest discover -s tests -v
 ```
 
-580 tests at the 1.1.0 tag, no dependencies, no network access needed. A handful skip
+665 tests at the 1.2.0 tag, no dependencies, no network access needed. A handful skip
 themselves on Windows and macOS (they use shell-script stand-ins for the CLI) —
 CI prints those skips in the log so they don't go silently green.
+
+## Updating
+
+`git pull`, then restart the board. Your `tickets/` and `config.json` are
+yours: neither is in this repository, and no release touches them. New ticket
+fields default to empty and older ticket files stay readable — the parser
+falls back for anything a file does not carry. `config.json` gains keys with
+defaults; nothing existing is rewritten.
+
+The one thing a release CAN change under you is a shipped skill. If you
+installed `werkbank-pull-ticket` or `werkbank-register-project` at user level,
+copy them again after an update — the installed copy is yours and is never
+touched automatically.
 
 ## How it's built
 

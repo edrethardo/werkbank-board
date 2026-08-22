@@ -24,6 +24,7 @@ nach:
 nicht_mit:
 fork: nein
 gate:
+gate_gap:
 review:
 version: 1
 session:
@@ -42,6 +43,8 @@ queue_pos:
 epic:
 interactive: nein
 review_cost_usd:
+orphaned:
+backend:
 claimed_at:
 created: 2026-08-14
 updated: 2026-08-14
@@ -355,6 +358,33 @@ class DirTest(unittest.TestCase):
         loaded = {x.id: x for x in store.load_tickets(self.dir)}
         self.assertIn("neu", loaded[t.id].body)
 
+
+
+class OpencodeGapsAcceptAPlannedGateTest(unittest.TestCase):
+    """WB-263 round 4: the create-ticket skill runs this against a DRAFT — a
+    plain string with no `gate` attribute — so the check always reported the
+    gate as missing and could never say "vollständig". An agent following the
+    skill literally hit a red check it could not fix, before the gate is even
+    settable. The gate is chosen in the step before; the caller can say so."""
+
+    DRAFT = ("## Beschreibung\n1. Lege `src/x.py` an.\n\n"
+             "## Tests / Abnahme\n\n    python3 -m pytest tests/test_x.py -q\n\n"
+             "## Fertig, wenn\n\n[ ] x existiert\n")
+
+    def test_a_planned_gate_satisfies_the_check(self):
+        self.assertEqual(
+            store.opencode_ticket_gaps(self.DRAFT, gate="Tests laufen durch"), [])
+
+    def test_without_one_it_still_says_so(self):
+        gaps = store.opencode_ticket_gaps(self.DRAFT)
+        self.assertTrue(any("gate" in g for g in gaps))
+
+    def test_a_real_ticket_still_uses_its_own_field(self):
+        """Passing nothing must keep reading the ticket, as the board does."""
+        class T:
+            body = OpencodeGapsAcceptAPlannedGateTest.DRAFT
+            gate = "Tests laufen durch"
+        self.assertEqual(store.opencode_ticket_gaps(T()), [])
 
 if __name__ == "__main__":
     unittest.main()

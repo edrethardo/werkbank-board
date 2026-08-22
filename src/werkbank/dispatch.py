@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from werkbank import filelock, opencode, setup, store
+from werkbank import filelock, messaging, opencode, setup, store
 
 
 # Windows has no SIGKILL. Referencing it raises AttributeError where it is
@@ -110,7 +110,7 @@ def claude_config_dir_for(project: str, cfg=None) -> Path:
 
 
 # WB-219: the assignees that run against the LOCAL model. They share one slot
-# on purpose — opencode and dsh talk to the same vLLM box on the same GPU, so
+# on purpose — opencode and dsh talk to the same local endpoint on the same GPU, so
 # giving dsh its own lane would let two local runs fight over one card and make
 # both slower than running them in turn. The slot keeps its historical name
 # because it is a dict key in the queues, the pending sets and every test.
@@ -123,10 +123,28 @@ def is_local(assignee) -> bool:
     return (assignee or "").strip().lower() in LOCAL_ASSIGNEES
 
 
-def assortment(assignee) -> str:
-    """Which slot a ticket runs in (WB-92). Local runs never touch
-    ~/.claude.json and share one lane of their own; everything else is a
-    Claude run sharing the single-`claude` rule."""
+def assortment(assignee, backend="") -> str:
+    """Which slot a ticket runs in.
+
+    WB-92: local runs (opencode, and dsh with the wrapper's default local
+    model) share ONE lane — the same GPU cannot serve two vLLM prompts
+    faster than one after the other.
+
+    WB-227: it is the BACKEND that decides, not the assignee name. A
+    `dsh` ticket with `backend: claude` starts the local Claude CLI and
+    never touches the GPU (WB-238 measured: 37 s Claude vs 79 s Qwen
+    on the same ticket) — routing it into the local slot would serialise
+    it against a Qwen run for no reason, and would make a Qwen run wait
+    behind a Claude-backend run that does not hold the card. So the
+    dsh+claude case goes into the claude slot, where WB-146's
+    per-project rule already handles the "one claude run per project"
+    concern.
+
+    All other cases keep the historical mapping: local assignee + local
+    or empty backend → local slot; everything else → claude slot."""
+    if (assignee or "").strip().lower() == "dsh" \
+            and (backend or "").strip().lower() == "claude":
+        return "claude"
     return LOCAL_SLOT if is_local(assignee) else "claude"
 
 
@@ -559,6 +577,25 @@ def log_dir() -> Path:
 
 def _log_path(ticket_id: str) -> Path:
     return log_dir() / f"werkbank-agent-{ticket_id}.log"
+
+
+def _handover_log_path(state_path=None) -> Path:
+    """WB-258: one line per direct-delivery attempt so the owner can see
+    whether a handover reached the chat or fell back to background."""
+    state = state_path or DEFAULT_STATE
+    return Path(state).parent / "handovers.jsonl"
+
+
+def _log_handover(state_path, ticket_id, session_id, result, action):
+    """Best-effort append. A logging crash must not stop delivery."""
+    try:
+        entry = {"ts": datetime.now().isoformat(timespec="seconds"),
+                 "ticket": ticket_id, "session": session_id,
+                 "result": result, "action": action}
+        with _handover_log_path(state_path).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _open_log(path: Path):
@@ -1040,13 +1077,19 @@ def freshly_claimed(t, window: float = CHAT_CLAIM_SECONDS) -> bool:
 
 def sweep_orphaned(tickets_dir, state_path=None) -> list:
     """Called once at server startup, before any dispatch: a ticket still in
-    in_arbeit cannot have a live finalizer (the queue starts empty), so its run
-    was cut off — most likely a board restart or crash (WB-17). Surface it in
-    fehlgeschlagen instead of letting it sit in in_arbeit forever.
+    in_arbeit cannot have a live finalizer (the queue starts empty), so its
+    run is either dead (crashed, board killed mid-flight) or orphaned (parent
+    dispatcher gone, agent still running).
 
-    WB-75: if the run's OS process is still alive (recorded pid, cmdline
-    matches ticket AND 'claude'), kill it — otherwise it keeps burning quota
-    with no dispatcher to receive its output."""
+    WB-230 (2026-08-18): treat those two cases differently. A DEAD run —
+    process is gone or does not match this ticket — is `fehlgeschlagen`
+    with the existing message; the reproducible incident that motivated
+    this bugfix showed that a LIVE orphaned run must NOT be killed
+    silently, because up to 40 min of on-disk work would go with it. The
+    live case is marked `orphaned=ja`, kept in in_arbeit, and the card
+    surfaces a "Beenden"-Knopf that lets the user decide. WB-75's "kill
+    the process" behaviour lives in `mark_orphan_failed` for the button
+    to call — same terminate + fehlgeschlagen shape, only user-initiated."""
     swept = []
     for t in store.load_tickets(tickets_dir):
         if t.status != "in_arbeit":
@@ -1062,33 +1105,77 @@ def sweep_orphaned(tickets_dir, state_path=None) -> list:
             continue          # WB-181: a chat claimed it minutes ago and works
         if t.limit_until:                     # WB-69: paused on quota, not stranded
             continue
-        killed_pid = None
+        pid = 0
         if t.pid:
             try:
                 pid = int(t.pid)
             except ValueError:
                 pid = 0
-            if pid > 0 and _process_matches_ticket(pid, t.id):
-                if _terminate_process(pid):
-                    killed_pid = pid
-        if killed_pid:
+        alive_matched = (pid > 0 and _is_running(pid)
+                         and _process_matches_ticket(pid, t.id))
+        if alive_matched:
+            # WB-230: leave the process alone; mark the ticket so the board
+            # shows "verwaister Lauf" and offers a manual end. Idempotent —
+            # a second sweep on the same ticket just rewrites the same fields.
             store.set_result(tickets_dir, t.id,
-                             f"Fehlgeschlagen: Die Werkbank wurde neu gestartet, während dieses "
-                             f"Ticket in Arbeit war. Der weiterlaufende Agenten-Prozess (PID "
-                             f"{killed_pid}) wurde beim Aufräumen beendet — sein Ergebnis konnte "
-                             f"nirgends mehr ankommen. Ob die Arbeit fertig wurde, zeigen "
-                             f"git-Verlauf und Journal des Zielprojekts. Bei Bedarf einfach "
-                             f"erneut versuchen.")
-        else:
-            store.set_result(tickets_dir, t.id,
-                             "Fehlgeschlagen: Die Werkbank wurde neu gestartet, während dieses "
-                             "Ticket in Arbeit war — der Abschluss des Laufs ist dabei verloren "
-                             "gegangen. Ob die eigentliche Arbeit fertig wurde, zeigen git-Verlauf "
-                             "und Journal des Zielprojekts. Bei Bedarf einfach erneut versuchen.")
+                f"Verwaister Lauf: Die Werkbank wurde neu gestartet, während "
+                f"dieses Ticket in Arbeit war. Der Agenten-Prozess (PID {pid}) "
+                f"läuft weiter, aber niemand nimmt sein Ergebnis mehr entgegen. "
+                f"Auf der Karte gibt es einen „Beenden“-Knopf; oder abwarten "
+                f"und im git-Verlauf des Zielprojekts prüfen, ob die Arbeit "
+                f"trotzdem angekommen ist.")
+            store.update_ticket(tickets_dir, t.id, {"orphaned": "ja"})
+            swept.append(t.id)
+            continue
+        # Dead run (process gone or does not match): existing behaviour.
+        store.set_result(tickets_dir, t.id,
+                         "Fehlgeschlagen: Die Werkbank wurde neu gestartet, während dieses "
+                         "Ticket in Arbeit war — der Abschluss des Laufs ist dabei verloren "
+                         "gegangen. Ob die eigentliche Arbeit fertig wurde, zeigen git-Verlauf "
+                         "und Journal des Zielprojekts. Bei Bedarf einfach erneut versuchen.")
         store.update_ticket(tickets_dir, t.id,
-                            {"status": "fehlgeschlagen", "pid": ""})
+                            {"status": "fehlgeschlagen", "pid": "",
+                             "orphaned": ""})
         swept.append(t.id)
     return swept
+
+
+def mark_orphan_failed(tickets_dir, ticket_id: str) -> dict:
+    """WB-230: the "Beenden"-Knopf. Called from the server when the user
+    decides to end a live orphan. Terminates the process (if still alive
+    and provably this ticket's), flips the ticket to fehlgeschlagen, and
+    clears `orphaned`. Returns `{"terminated": bool, "pid": int}` for the
+    caller to send back. Never raises for the "already gone" cases —
+    reports honestly what happened."""
+    tickets = {x.id: x for x in store.load_tickets(tickets_dir)}
+    t = tickets.get(ticket_id)
+    if t is None:
+        raise KeyError(ticket_id)
+    pid = 0
+    if t.pid:
+        try:
+            pid = int(t.pid)
+        except ValueError:
+            pid = 0
+    terminated = False
+    if pid > 0 and _is_running(pid) and _process_matches_ticket(pid, ticket_id):
+        terminated = _terminate_process(pid)
+    if terminated:
+        msg = (f"Beendet: Der verwaiste Agenten-Prozess (PID {pid}) wurde "
+               f"auf Wunsch gestoppt. Sein Ergebnis-Text konnte nirgends mehr "
+               f"ankommen (die Pipe des Besitzer-Dispatchers war seit dessen "
+               f"Ende weg); die Arbeit auf der Platte im Zielprojekt bleibt "
+               f"aber erhalten — git-Verlauf und Journal zeigen, was schon "
+               f"eingecheckt ist. Bei Bedarf erneut versuchen.")
+    else:
+        msg = ("Beendet: Der verwaiste Lauf war schon nicht mehr erreichbar "
+               "(Prozess weg oder PID nicht mehr zuordenbar). Ticket auf "
+               "fehlgeschlagen gesetzt.")
+    store.set_result(tickets_dir, ticket_id, msg)
+    store.update_ticket(tickets_dir, ticket_id,
+                        {"status": "fehlgeschlagen", "pid": "",
+                         "orphaned": ""})
+    return {"terminated": terminated, "pid": pid}
 
 
 def reap_ownerless_agents(tickets_dir) -> list:
@@ -1252,6 +1339,7 @@ class Dispatcher:
             try:
                 self.sweep_handovers()
                 reap_ownerless_agents(self.tickets_dir)   # WB-142
+                self.detect_live_orphans()                # WB-230
                 self.adopt_orphans()
                 self.pump_queue()
             except Exception:
@@ -1309,7 +1397,8 @@ class Dispatcher:
         if not self.exclusive:
             return False   # not this instance's board (WB-142 round 2)
         t = self._ticket_by_id(ticket_id)
-        slot = assortment(getattr(t, "assignee", None))
+        slot = assortment(getattr(t, "assignee", None),
+                          getattr(t, "backend", ""))    # WB-227
         with self._lock:
             if ticket_id in self._slot:
                 return False
@@ -1451,10 +1540,73 @@ class Dispatcher:
                     # lane's declared test run) would have been silently
                     # worked by Claude. WB-219: same for dsh.
                     and not is_local(getattr(t, "assignee", ""))):
-                store.update_ticket(self.tickets_dir, ticket_id,
-                                    {"handover": entry["id"],
-                                     "handover_at": str(int(time.time()))})
-                self.arm_handover_fallback(ticket_id)
+                # WB-258: try to poke the chat session directly through its
+                # messaging socket first. A dead session shows up as
+                # NO_SESSION_FILE / DEAD_SOCKET and we skip the marker AND
+                # the 5-minute wait — the whole point of asking the socket
+                # is that we no longer have to guess whether anyone is
+                # listening. Any other outcome (DELIVERED, WRONG_PROTOCOL,
+                # ERROR) keeps the marker path: the ticket waits its
+                # `chat_handover_minutes` so the USER can still say "zieh dir
+                # dein Ticket" in the chat, and the marker is the audit trail.
+                # WB-263: it is NOT an automatic safety net any more — the
+                # polling watcher that used to notice the marker by itself was
+                # abolished with WB-258, so an undelivered handover is a wait
+                # for a human, not a second delivery mechanism.
+                state_path = self.cfg.get("state_path")
+                sessions_dir = self.cfg.get("sessions_path")
+                delivery = messaging.deliver(
+                    entry["id"],
+                    messaging.handover_text(ticket_id, t.title),
+                    sessions_dir=sessions_dir)
+                # WB-263: NO_SOCKET_SUPPORT belongs here too. On Windows
+                # there are no unix sockets at all, so NO chat can ever be
+                # reached — waiting five minutes for a claim that cannot
+                # arrive is pure dead time on the one platform where the
+                # background run is the only path there is.
+                if delivery in (messaging.DeliveryResult.NO_SESSION_FILE,
+                                messaging.DeliveryResult.DEAD_SOCKET,
+                                messaging.DeliveryResult.NO_SOCKET_SUPPORT):
+                    _log_handover(state_path, ticket_id, entry["id"],
+                                  delivery.value, "background")
+                    # fall through to runner path below — no marker, no wait
+                else:
+                    _log_handover(state_path, ticket_id, entry["id"],
+                                  delivery.value, "marker")
+                    store.update_ticket(self.tickets_dir, ticket_id,
+                                        {"handover": entry["id"],
+                                         "handover_at": str(int(time.time()))})
+                    self.arm_handover_fallback(ticket_id)
+                    return
+            # WB-226: the ticket names something the configured gate does NOT
+            # cover for THIS piece of work (UI, animation, layout — anywhere
+            # "compiles and unchanged logic still runs" does not equal
+            # "accepted"). Autostart would produce a green that means nothing.
+            # If the WB-22 handover above did fire, we already returned — the
+            # chat session is exactly the human-oversight route we want. If it
+            # did NOT fire (no chat lineage, or local lane), bounce back to
+            # Offen with the gap text and a next-step hint. Fires for BOTH
+            # lanes on purpose — a local run cannot solve the same "green
+            # means nothing" trap.
+            gap = (getattr(t, "gate_gap", "") or "").strip()
+            if gap:
+                project = t.project or self.cfg.get("default_project", "")
+                if is_local(getattr(t, "assignee", "")):
+                    msg = (f"Kein Autostart — die hinterlegte Prüfung deckt "
+                           f"dieses Ticket nicht vollständig ab. Was fehlt: "
+                           f"„{gap}“. Ein lokaler Lauf würde ein grünes "
+                           f"Häkchen produzieren, das nichts bedeutet: "
+                           f"setze den Bearbeiter auf claude und öffne eine "
+                           f"Chat-Session in dem Projekt.")
+                else:
+                    msg = (f"Kein Autostart — die hinterlegte Prüfung deckt "
+                           f"dieses Ticket nicht vollständig ab. Was fehlt: "
+                           f"„{gap}“. Öffne Claude Code in „{project}“ und "
+                           f"sag „zieh dir dein Ticket“ — nur eine "
+                           f"Chat-Sitzung mit dir am Bildschirm beweist die "
+                           f"Abnahme. Solange bleibt das Ticket in „Offen“.")
+                store.set_result(self.tickets_dir, ticket_id, msg)
+                store.update_ticket(self.tickets_dir, ticket_id, {"status": "offen"})
                 return
             # WB-161 / WB-168: an epic MUST be planned interactively — the whole
             # point is that the user is in the conversation. WB-168 extends the
@@ -1709,6 +1861,58 @@ class Dispatcher:
         window = float(self.cfg.get("chat_claim_minutes", 60)) * 60
         return freshly_claimed(t, window)
 
+    def detect_live_orphans(self):
+        """WB-230: run every tick. A ticket is a live orphan when its status
+        is `in_arbeit`, its recorded pid points at a live process THIS
+        dispatcher does not own, and that process's environment proves it
+        was started for this ticket (WB-142 evidence).
+
+        This is the fix for the incident that motivated WB-230: the
+        original owner-dispatcher died, the agent process kept working for
+        73 minutes, `sweep_orphaned` only runs at startup and
+        `reap_ownerless_agents` only fires when the ticket has moved on —
+        so nothing surfaced the stranded state. Marking `orphaned=ja`
+        lets the board show it within one tick (default 15 s). The
+        process is NOT killed — that decision belongs to the user via
+        the "Beenden"-Knopf on the card (see `mark_orphan_failed`)."""
+        if not self.exclusive:
+            return
+        with self._lock:
+            owned = set(self._runs.keys())
+        try:
+            tickets = store.load_tickets(self.tickets_dir)
+        except OSError:
+            return
+        for t in tickets:
+            if t.status != "in_arbeit":
+                continue
+            if t.id in owned:
+                continue          # this dispatcher's own live run — fine
+            if getattr(t, "orphaned", "") == "ja":
+                continue          # already marked, do not spam set_result
+            if t.handover:
+                continue
+            if freshly_claimed(t):
+                continue          # WB-181: a chat holds this one
+            if not t.pid:
+                continue          # no pid on file → nothing to detect
+            try:
+                pid = int(t.pid)
+            except ValueError:
+                continue
+            if pid <= 0 or not _is_running(pid):
+                continue          # dead or invalid → sweep_orphaned's problem
+            if not _process_matches_ticket(pid, t.id):
+                continue          # PID reused for something unrelated
+            store.set_result(self.tickets_dir, t.id,
+                f"Verwaister Lauf: Der Prozess dieses Tickets läuft weiter "
+                f"(PID {pid}), aber der Dispatcher, der ihn gestartet hat, ist "
+                f"nicht mehr da. Sein Ergebnis-Text kommt nirgends mehr an. "
+                f"Auf der Karte gibt es einen „Beenden“-Knopf; oder abwarten "
+                f"und im git-Verlauf des Zielprojekts prüfen, ob die Arbeit "
+                f"trotzdem angekommen ist.")
+            store.update_ticket(self.tickets_dir, t.id, {"orphaned": "ja"})
+
     def adopt_orphans(self):
         """WB-68b: a ticket in in_arbeit with no handover marker and no run is
         stuck where nobody looks. Pick it up — unless a chat session is
@@ -1728,6 +1932,8 @@ class Dispatcher:
                 continue          # WB-181: a chat claimed it minutes ago
             if t.limit_until and int(t.limit_until or 0) > int(time.time()):
                 continue          # WB-69: paused on quota, resume is armed
+            if getattr(t, "orphaned", "") == "ja":
+                continue          # WB-230: user must decide before restart
             if not known_assignee(getattr(t, "assignee", "")):
                 continue          # WB-105: a human's ticket is not an orphan
             self.dispatch(t.id)
@@ -1794,8 +2000,11 @@ class Dispatcher:
         it cannot join. WB-92: opencode is single-lane globally (one local
         model). WB-146: claude is single-lane PER PROJECT — each project has
         its own CLAUDE_CONFIG_DIR and thus its own ~/.claude.json, so two
-        projects no longer share the file that made concurrent runs unsafe."""
-        slot = assortment(getattr(t, "assignee", None))
+        projects no longer share the file that made concurrent runs unsafe.
+        WB-227: the ticket's `backend` may route a dsh ticket into the claude
+        slot; assortment() honours that."""
+        slot = assortment(getattr(t, "assignee", None),
+                          getattr(t, "backend", ""))
         with self._lock:
             pending = set(self._pending[slot])
         if slot == LOCAL_SLOT:

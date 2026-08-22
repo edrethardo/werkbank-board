@@ -2,7 +2,7 @@
 
 A board run is verifiable — there is a process, a log, an idle counter. A CHAT
 claim is one field in a file, and the card stated it as fact: "wird sichtbar in
-Chat-Session 66268d15… bearbeitet". Measured on 2026-08-17: WB-203 said exactly
+Chat-Session a1b2c3d4… bearbeitet". Measured on 2026-08-17: WB-203 said exactly
 that for several minutes while the session that had claimed it was finishing a
 different ticket. The user saw it and said "ich glaub das nicht" — correctly.
 
@@ -50,7 +50,7 @@ class ClaimHintTest(unittest.TestCase):
         script.write_text(
             _claim_hint_source()
             + "\nconsole.log(JSON.stringify(claimHint("
-              f'{{session: "66268d15-abcd", claimed_at: "{claimed_at}"}},'
+              f'{{session: "a1b2c3d4-abcd", claimed_at: "{claimed_at}"}},'
               f" {now}, {warn or self.WARN})));\n", encoding="utf-8")
         out = subprocess.run([NODE, str(script)], capture_output=True, text=True,
                              encoding="utf-8", timeout=30)

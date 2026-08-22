@@ -1,7 +1,7 @@
 ---
 name: journaling
 description: Use at session end, after completing or abandoning any task, or when an approach fails — record what happened in docs/journal/ so no future session re-investigates it.
-version: 1
+version: 3
 ---
 
 # Journaling

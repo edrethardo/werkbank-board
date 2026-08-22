@@ -1,7 +1,7 @@
 ---
 name: werkbank-pull-ticket
 description: Use when the user asks this session to pull or work its Werkbank ticket — "zieh dir ein Ticket", "hol dir dein Ticket", "hast du ein Ticket?", "arbeite dein Ticket ab" — find the open ticket for THIS project on the Werkbank board and work it.
-version: 9
+version: 11
 ---
 
 # Werkbank: Pull Your Ticket
@@ -163,42 +163,26 @@ guess an id. Then commit the ticket file in the Werkbank repo (do not push):
     git -C "$WERKBANK" add tickets/
     git -C "$WERKBANK" commit -m "Work tickets: <id> (pulled by <project name>)"
 
-## 5. Handover watcher — START IT WHEN YOU CLAIM, NOT WHEN YOU FINISH
+## 5. Staying reachable — no watcher any more
 
-**Only in an INTERACTIVE chat session — never in a dispatched background run,
-which must leave no background job behind at all.** Measured 2026-08-16
-(WB-77): a background run copied this rule from a resumed chat transcript and
-left the watcher looping. It had already delivered its result, but the watcher
-inherited the run's output pipe, so the board could not see the run had
-finished: 19 minutes of "in Arbeit", the queue stalled behind it, and the
-30-minute watchdog would have filed the SUCCESSFUL run as failed.
+**Since WB-258 the board delivers a handover straight into the chat** over the
+session's messaging socket. There is nothing to poll: a dragged ticket arrives
+as a message in this conversation, and you answer it by pulling the ticket.
 
-**Rule:** restarting the watcher is the FIRST action after claiming a ticket.
-Doing it "at the end" fails whenever the end is interrupted — the next handover
-then sits unnoticed until the board's fallback picks it up, and the user has to
-ask why nothing happens (this happened three times in this project).
+What makes that work is the REGISTRATION, not a loop: the board hands a
+project's tickets to whichever session is registered for that project. Pulling
+a ticket registers this session (step 4 does it), and the
+`werkbank-register-session` skill does it deliberately for any project.
 
-Start it (Bash, run_in_background):
+**Do not start a polling watcher.** It was the old mechanism and it cost this
+project real time: a background run once copied the loop out of a resumed chat
+transcript and left it running, holding the run's output pipe open — 19 minutes
+of "in Arbeit", the whole queue stalled behind a run that had already finished
+(WB-77). A second version looked started and had already exited, because its
+deadline was computed from a per-shell counter that was still zero (WB-259).
+Both failure modes disappear with the loop itself.
 
-    WERKBANK=/pfad/zur/werkbank
-    end=$((SECONDS+7200)); while [ $SECONDS -lt $end ]; do
-      f=$(grep -l "^handover: $CLAUDE_CODE_SESSION_ID" "$WERKBANK"/tickets/*.md 2>/dev/null | head -1)
-      [ -n "$f" ] && { echo "HANDOVER:$f"; exit 0; }; sleep 5
-    done; echo TIMEOUT; exit 1
+If a handover ever fails to arrive, that is a bug in delivery — say so and
+check the registration (`state.json` must hold this session's id with
+`"interactive": true`), rather than reintroducing a poller.
 
-When it exits with HANDOVER:<file>, CLAIM IMMEDIATELY (deadline ~5 min, then a
-background run takes over):
-
-    WERKBANK=/pfad/zur/werkbank WB=WB-42 python3 - <<'EOF'
-    import os, sys
-    sys.path.insert(0, os.path.join(os.environ["WERKBANK"], "src"))
-    from werkbank import store
-    store.update_ticket(os.path.join(os.environ["WERKBANK"], "tickets"),
-                        os.environ["WB"],
-                        {"handover": "", "handover_at": "",
-                         "session": os.environ["CLAUDE_CODE_SESSION_ID"]})
-    EOF
-
-Claim within `chat_handover_minutes` (default 5, counted from the marker's own
-timestamp — it survives board restarts), then RESTART THE WATCHER, then tell the
-user the ticket arrived and work it visibly per steps 2–4.

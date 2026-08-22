@@ -21,7 +21,25 @@ THE CONTRACT — the board depends on exactly this:
     exit 3    the project directory does not exist
     exit 4    the model endpoint is unreachable (box off, engine not loaded)
     exit 5    the agent ran but produced no final text
+    exit 6    a backend was requested that THIS launcher does not implement
     other     the agent's own exit code
+
+THE BACKEND SWITCH — read this before you replace the launcher:
+
+    DSH_TASK_BACKEND   empty / "local"  → the local model (what this file does)
+                       anything else    → YOUR launcher has to implement it
+
+The board sets that variable from the ticket's `backend:` field, and it
+SCHEDULES the run according to it: a ticket that says `claude` is put in the
+Claude lane, because a run that does not touch the GPU may go in parallel with
+a local one. A launcher that ignores the variable therefore does not merely do
+the wrong thing quietly — it runs the local model on the GPU while the board
+believes the GPU is free, and two local runs then fight over one card.
+
+This reference launcher does NOT implement a claude backend (how you would
+route a harness through the Claude CLI is your setup, not ours). It refuses
+with exit 6 instead of pretending, which the board reads as "the tooling did
+not complete" — not as "the model did poor work".
 
 FOUR THINGS THAT COST REAL DEBUGGING TIME. They are the reason this file
 exists next to `opencode-task` instead of being one line different:
@@ -69,6 +87,10 @@ import urllib.request
 BAD_DIRECTORY = 3
 ENDPOINT_DOWN = 4
 NO_FINAL_TEXT = 5
+# WB-263: silently ignoring a requested backend is worse than refusing it —
+# the board schedules by that field, so "ignore it" means a GPU run in the
+# lane reserved for runs that leave the GPU alone.
+BACKEND_NOT_IMPLEMENTED = 6
 
 
 def log(message: str) -> None:
@@ -198,6 +220,16 @@ def main(argv) -> int:
     if not os.path.isdir(project):
         log(f"no such directory: {project}")
         return BAD_DIRECTORY
+
+    backend = os.environ.get("DSH_TASK_BACKEND", "").strip().lower()
+    if backend not in ("", "local"):
+        log(f"backend {backend!r} requested, and this reference launcher only "
+            f"implements the local model. Refusing instead of running the "
+            f"local one behind the board's back — it schedules `claude` runs "
+            f"as GPU-free and would start a second local run alongside. "
+            f"Implement the backend here, or clear the ticket's `backend` "
+            f"field.")
+        return BACKEND_NOT_IMPLEMENTED
 
     task = sys.stdin.read()          # verbatim, however long
     if not task.strip():

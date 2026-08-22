@@ -75,7 +75,8 @@ def load_config(path=None):
         # name, no remedy, in a tool that speaks German everywhere else. An
         # adversarial first-run review stopped exactly here.
         try:
-            cfg.update(json.loads(path.read_text(encoding="utf-8")))
+            from_file = json.loads(path.read_text(encoding="utf-8"))
+            cfg.update(from_file)
         except json.JSONDecodeError as e:
             print(f"Die Datei {path} ist nicht lesbar: In Zeile {e.lineno} "
                   f"stimmt etwas nicht ({e.msg}).\n"
@@ -87,6 +88,11 @@ def load_config(path=None):
                   file=sys.stderr)
             raise SystemExit(1)
         cfg["config_exists"] = True
+        # WB-263: whether the FILE named a project, not whether the value
+        # happens to equal the checkout — pointing the board at itself is a
+        # legitimate, deliberate choice (it is how this tool was built), and
+        # only the unset case is the accident.
+        cfg["default_project_in_file"] = "default_project" in from_file
         cfg["repo_root"] = str(REPO_ROOT)   # never overridable from the file
     return cfg
 
@@ -209,12 +215,44 @@ def auth_required() -> bool:
     return LAN and bool(CONFIG.get("password_hash"))
 
 
+def _reject_unknown_gate(gate: str, project: str) -> None:
+    """Raise ValueError naming the real choices, or return quietly.
+
+    WB-263: an empty gate is fine (the dispatch decides whether the assignee
+    needs one); a gate that does not exist for the project is not — it used to
+    be accepted here and surface minutes later when the dispatch refused it.
+
+    The German quotes are written as escapes on purpose: a typographic closing
+    quote typed as a plain `"` ends the string literal, which cost this file a
+    SyntaxError twice.
+    """
+    gate = (gate or "").strip()
+    if not gate:
+        return
+    known = sorted(opencode.project_gates(project, CONFIG))
+    if gate in known:
+        return
+    if known:
+        raise ValueError(
+            f"Die Pr\u00fcfung \u201e{gate}\u201c gibt es f\u00fcr dieses "
+            f"Projekt nicht. Zur Auswahl stehen: {', '.join(known)}.")
+    raise ValueError(
+        f"Die Pr\u00fcfung \u201e{gate}\u201c gibt es nicht \u2014 f\u00fcr "
+        f"dieses Projekt ist \u00fcberhaupt keine hinterlegt. Trage sie in "
+        f"config.json unter \u201egates\u201c ein, dann kann ein Ticket sie "
+        f"nennen.")
+
+
 def public_config(cfg: dict) -> dict:
     """What the board page may see. The password hash never leaves the server —
     it is the credential material, and a browser has no use for it. Gates are
     reduced to their NAMES: the commands stay here, so a page (or anything that
     reads its traffic) never learns what runs on this machine."""
     safe = {k: v for k, v in cfg.items() if k != "password_hash"}
+    # WB-263: the detail dialog used to print a hardcoded /tmp path for the run
+    # log — wrong since WB-35 moved the logs into the user's state dir. The
+    # board knows where they are; the page should not guess.
+    safe["log_dir"] = str(dispatch.log_dir())
     safe["gates"] = {project: sorted(names)
                      for project, names in
                      ((p, (g if isinstance(g, dict) else {"standard": g}))
@@ -375,6 +413,13 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._json_body()
                 if not b.get("title", "").strip():
                     raise ValueError("Titel darf nicht leer sein")
+                # WB-263: a gate name the project does not have was accepted
+                # here and only surfaced minutes later, when the dispatch
+                # refused it. The board's own dropdown cannot produce one —
+                # this is the API and skill path, and a deferred failure is
+                # the thing this project keeps apologising for.
+                _reject_unknown_gate(b.get("gate", ""),
+                                     b.get("project") or CONFIG["default_project"])
                 t = store.create_ticket(
                     TICKETS_DIR,
                     title=b["title"],
@@ -389,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
                     fork=b.get("fork", "nein"),
                     epic=b.get("epic", ""),
                     interactive=b.get("interactive", "nein"),
+                    gate_gap=b.get("gate_gap", ""),
+                    backend=b.get("backend", ""),
                 )
                 # WB-175: if the client sent along the router's suggestion
                 # AND the user picked a different assignee, log the override
@@ -498,6 +545,21 @@ class Handler(BaseHTTPRequestHandler):
                     get_dispatcher())
                 self._send(code, payload)
                 return
+            m_kill = re.fullmatch(r"/api/tickets/(WB-\d+)/kill-orphan",
+                                  self.path)
+            if m_kill:
+                # WB-230: the "Beenden"-Knopf on a card marked orphaned=ja.
+                # Body ignored; the ticket file already carries the pid.
+                # Terminates the process (if provably this ticket's) and
+                # sets fehlgeschlagen — the same shape sweep_orphaned would
+                # have taken WITHOUT the WB-230 change, only user-initiated.
+                try:
+                    result = dispatch.mark_orphan_failed(
+                        TICKETS_DIR, m_kill.group(1))
+                    self._send(200, result)
+                except KeyError as e:
+                    self._send(404, {"error": f"Ticket nicht gefunden: {e}"})
+                return
             m = re.fullmatch(r"/api/tickets/(WB-\d+)", self.path)
             if m:
                 b = self._json_body()
@@ -530,6 +592,15 @@ class Handler(BaseHTTPRequestHandler):
                     if reasons:
                         self._send(409, {"error": "Nicht gestartet — " + "; ".join(reasons)})
                         return
+                # WB-263 round 2: the create path refused an unknown gate
+                # while the EDIT path still accepted one, so the deferred
+                # failure survived on the route a user actually takes when
+                # fixing a ticket. Same check, same message.
+                if "gate" in b:
+                    _reject_unknown_gate(
+                        b["gate"], b.get("project")
+                        or (before.project if before else "")
+                        or CONFIG["default_project"])
                 t = store.update_ticket(TICKETS_DIR, m.group(1), b)
                 # Dragging offen/fehlgeschlagen -> in_arbeit starts the assigned
                 # agent (from fehlgeschlagen it is a retry).

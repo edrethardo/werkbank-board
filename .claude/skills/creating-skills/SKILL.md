@@ -35,7 +35,7 @@ never change how Claude behaves in the user's other projects. Edit the skill in 
 and bump its `version:`.
 
 If the improvement is generic — it would help ANY project using this setup, not just
-this tool — also offer to carry it back to the kit: `.developer-agent.json` records
+this tool — also offer to carry it back to the kit: the project's own kit handshake file (if it has one) records
 `kit_origin`. If that is a local folder, apply the same change and version bump there
 and journal it in both places. If it is only a URL, or the user does not want to bother,
 journal the improvement here with a "not carried back" note and move on; the tool keeps

@@ -1,7 +1,7 @@
 ---
 name: create-ticket
 description: Use when the user asks to create a ticket in chat — "erstelle ein Ticket", "leg ein Ticket an", "schreib das als Ticket auf", "mach daraus ein Ticket", "das sollten wir als Ticket festhalten".
-version: 5
+version: 6
 ---
 
 # Create a Ticket from Chat
@@ -26,9 +26,11 @@ one short question at a time (AskUserQuestion or plain text):
 - **description** — required in practice: what should exist afterwards, and any
   acceptance criteria the user states. If the user gave only a title-sized wish,
   ask ONE question ("Woran erkennst du, dass es fertig ist?") rather than padding.
-- **type** — `aufgabe` (default) or `bug`. If the user is reporting broken
-  behavior, prefer the `werkbank-report-bug` flow (it asks repro questions);
-  otherwise `aufgabe`.
+- **type** — `aufgabe` (default), `bug`, or `epic` (WB-161). If the user is
+  reporting broken behavior, prefer the `werkbank-report-bug` flow (it asks
+  repro questions); a package big enough that it will have to be broken up
+  into several tickets → `epic` (it is planned in a chat session, and its
+  children carry `epic: WB-<parent>`); otherwise `aufgabe`.
 - **priority** — `hoch` | `normal` (default) | `niedrig`. Infer from urgency
   words; only ask when the user signals urgency but you cannot rank it.
 - **project** — absolute path. Default: `default_project` from `config.json`.
@@ -53,6 +55,54 @@ one short question at a time (AskUserQuestion or plain text):
 
 Do NOT interrogate the user through all six fields — sensible defaults beat a
 questionnaire. One confirmation question maximum when everything was inferable.
+
+## 1a. Gate for opencode — resolve it BEFORE creating (WB-166)
+
+If (and only if) you are about to recommend `assignee=opencode`, resolve the
+gate now. The ticket must carry a valid `gate:` name before it lands on the
+board — otherwise the first dispatch fails with the German refusal from
+`opencode.no_gate_message`. Read the project's gates from config.json:
+
+```bash
+WB_PROJECT="<absolute project path>" python3 - << 'EOF'
+import json, os, sys; sys.path.insert(0, "src")
+from werkbank import opencode
+cfg = json.load(open("config.json"))
+print("\n".join(sorted(opencode.project_gates(os.environ["WB_PROJECT"], cfg)))
+      or "(keine)")
+EOF
+```
+
+Then decide:
+
+- **Exactly one gate configured** → use its name; mention it in the confirmation
+  ("empfohlen: opencode — geprüft über „<name>"").
+- **Several gates configured** → ask the user which one belongs to this ticket;
+  do NOT guess (a wrong gate greens on unrelated evidence).
+- **No gate configured for this project** → do NOT create an opencode ticket
+  yet. Offer BOTH honest paths to the user in one sentence:
+  1. **Fall back to `claude`** and create the ticket now (fastest path).
+  2. **Add a gate first**: ask the user for a name (like „Tests laufen durch")
+     and the shell command that proves this class of work is done in this
+     project, then persist it before creating the ticket:
+
+     ```bash
+     WB_PROJECT="<abs path>" WB_GATE_NAME="Tests laufen durch" \
+     WB_GATE_CMD="python3 -m pytest tests/ -q" python3 - << 'EOF'
+     import json, os
+     cfg = json.load(open("config.json"))
+     cfg.setdefault("gates", {}).setdefault(os.environ["WB_PROJECT"], {})[
+         os.environ["WB_GATE_NAME"]] = os.environ["WB_GATE_CMD"]
+     open("config.json", "w").write(json.dumps(cfg, indent=2) + "\n")
+     EOF
+     ```
+
+     Then set `gate=<the new name>` on the ticket. Do this only when the
+     board is not actively working an opencode ticket for this project — a
+     concurrent gate write can otherwise race the reader.
+
+The claude lane does NOT require a gate; leave the ticket's `gate` field empty
+for `assignee=claude` unless the user explicitly asks for one.
 
 ## 1b. opencode-Modus — Pflicht, sobald `assignee: opencode`
 
@@ -82,8 +132,15 @@ Ein opencode-Ticket MUSS deshalb so aussehen:
 
 Vor dem Anlegen prüfen (fängt die strukturellen Auslassungen, nicht die Qualität):
 
-    python3 -c "import sys; sys.path.insert(0, 'src'); from werkbank import store; \
-      print(store.opencode_ticket_gaps(open('/tmp/entwurf.md').read()) or 'vollständig')"
+    WB_GATE="Tests laufen durch" python3 - <<'EOF'
+    import os, sys; sys.path.insert(0, "src")
+    from werkbank import store
+    draft = open("/tmp/entwurf.md", encoding="utf-8").read()
+    # gate= ist die Prüfung, die du in §1a ausgewählt hast — der Entwurf ist
+    # nur Text und trägt sie noch nicht.
+    print(store.opencode_ticket_gaps(draft, gate=os.environ["WB_GATE"])
+          or "vollständig")
+    EOF
 
 Kurzbeispiel für die Beschreibung:
 
@@ -110,13 +167,16 @@ Vorlagen aus der Praxis: WB-193, WB-194, WB-195 im Luna-Projekt.
 # a quote or triple-quote in user text would otherwise end the literal and
 # execute the rest as Python (WB-35 review).
 WB_TITLE="<title>" WB_DESC="<description>" WB_PROJECT="<absolute project path>" \
-WB_PRIO="normal" WB_TYPE="aufgabe" python3 - << 'EOF'
+WB_PRIO="normal" WB_TYPE="aufgabe" WB_ASSIGNEE="claude" WB_GATE="" \
+python3 - << 'EOF'
 import os, sys; sys.path.insert(0, "src")
 from werkbank import store
 t = store.create_ticket("tickets", title=os.environ["WB_TITLE"],
                         description=os.environ["WB_DESC"],
                         project=os.environ["WB_PROJECT"],
-                        priority=os.environ["WB_PRIO"], type=os.environ["WB_TYPE"])
+                        priority=os.environ["WB_PRIO"], type=os.environ["WB_TYPE"],
+                        assignee=os.environ["WB_ASSIGNEE"],
+                        gate=os.environ["WB_GATE"])
 print(t.id)
 EOF
 ```

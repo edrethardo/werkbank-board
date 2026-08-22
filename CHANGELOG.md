@@ -10,6 +10,190 @@ language during setup; entries are maintained by the documenting skill. -->
 
 _(noch nichts)_
 
+## [1.2.0] — 2026-08-22
+
+Drei Tage nach 1.1.0, und diesmal geht es fast nur um **Ehrlichkeit des
+Boards**: Es soll nicht behaupten, was es nicht weiß, und nicht schweigen, wenn
+etwas schiefgeht.
+
+**Neu für dich:** Ein Ticket kann jetzt sagen, **was seine Prüfung NICHT
+abdeckt** — dann startet es nicht automatisch, sondern wartet auf ein
+Menschenauge. Bei `dsh`-Tickets wählst du **pro Ticket**, ob das Modell auf
+deinem Rechner oder Claude arbeitet. Und Tickets, die du auf „In Arbeit"
+ziehst, landen **sofort** in der offenen Chat-Sitzung statt über einen Umweg.
+
+**Was nicht funktionierte und jetzt tut:**
+
+- Das Board blieb auf **älteren Handys komplett leer** — eine einzige moderne
+  Schreibweise ließ die ganze Seite schon beim Einlesen scheitern.
+- Ein **verwaister Lauf** (der Agent arbeitet weiter, aber niemand nimmt sein
+  Ergebnis mehr entgegen) blieb unbemerkt, bis das Board neu startete.
+- Der Standard-Bearbeiter im Neu-Dialog war kurzzeitig `dsh`; er ist wieder
+  `claude`, überall.
+- Ein Fehler in der Board-Seite zeigt sich jetzt **als roter Balken auf der
+  Seite** statt als weißer Bildschirm.
+
+Unverändert gilt, was im README steht: **Das Board ist unter Windows und macOS
+nie gestartet worden**, und die lokale Spur hat wenige echte Läufe hinter sich.
+
+- 2026-08-22 — **Zwei Kleinigkeiten aus der Vorführungs-Probe.** Das
+  Ticket-Fenster nannte einen Pfad zum Lauf-Protokoll, den es seit Monaten
+  nicht mehr gibt — jetzt steht dort der echte. Und eine `config.json`, in der
+  das Zielprojekt **fehlt**, wird beim Start benannt: vorher fiel das Board
+  still auf seinen eigenen Ordner zurück, und das erste gezogene Ticket hätte
+  einen Agenten mit Befehls-Rechten auf die Werkbank selbst losgelassen.
+
+- 2026-08-20 — **Das Board blieb auf älteren Handys komplett leer.** Schuld war
+  eine einzige moderne Schreibweise, die am Vortag mit der neuen
+  Warteschlangen-Sortierung hineingeraten war: Versteht der Browser sie nicht,
+  **scheitert die ganze Seite schon beim Einlesen** — kein Bild, keine Meldung,
+  weiß. Behoben und mit einem Test abgesichert, der genau diese Sorte
+  Schreibweise künftig blockiert. Zwei Folgen daraus: Ein Fehler in der Seite
+  zeigt sich jetzt **als roter Balken auf der Seite** statt als weißer
+  Bildschirm — und diese Meldung liegt in einem eigenen Block, damit sie auch
+  dann noch erscheint, wenn der Rest der Seite gar nicht gelesen werden kann.
+
+- 2026-08-20 — **Auf dem Handy stand „Zu bearbeiten" noch in der alten
+  Reihenfolge.** Die Sortierung nach echter Abarbeitungs-Reihenfolge gab es
+  bisher nur am Rechner.
+
+- 2026-08-20 — **Der Standard-Bearbeiter im „Neues Ticket"-Dialog ist
+  wieder claude — überall, egal ob das Projekt eine Prüfung hinterlegt
+  hat.** WB-228 hatte am 2026-08-18 dsh als opinionierten Standard
+  eingebaut (nur wo eine Prüfung hinterlegt ist, sonst claude), auf
+  Grundlage einer weitergereichten /goal-Anweisung. der Nutzer dreht das mit
+  WB-252 zurück: „Claude ist der goto Agent." Der WB-175-Titel-Router
+  gewinnt weiter, wenn dein Titel auf ein Muster passt (z. B.
+  „refactor" → claude, „doku aufraeumen" → opencode); Handwahl wird nie
+  überschrieben; der Detail-Dialog fasst gespeicherte Zuweisungen nicht
+  an. Wirkt beim nächsten Öffnen der Seite (`board.html` wird pro
+  Aufruf frisch gelesen, kein Prozess-Neustart nötig).
+
+- 2026-08-20 — **Übergaben erreichen die Chat-Session jetzt sofort — und
+  eine tote Session wird sofort erkannt statt nach fünf Minuten Warten.**
+  Bisher schrieb die Werkbank bei einem Drag/Handover einen Marker in
+  die Ticket-Datei und wartete darauf, dass der Watcher-Loop in deiner
+  offenen Chat-Session merkt, dass er gemeint ist. War dein Chat schon
+  zu (Fenster geschlossen, Rechner gestartet, was auch immer), lief die
+  Werkbank 5 Minuten lang gegen eine Wand, bevor der Hintergrund-Lauf
+  übernahm — Zeit, in der scheinbar „In Arbeit" war, tatsächlich aber
+  niemand. Neu (WB-258): die Werkbank spricht die Session direkt an
+  über den Kanal, den Claude Code selbst dafür anbietet. Ergebnis:
+  offene Session → dein Chat bekommt sofort eine Nachricht mit der
+  Aufforderung, das Ticket zu übernehmen (auch mitten in einem
+  laufenden Tool-Call), tote Session → das Board fällt SOFORT (ohne
+  die 5 Minuten) auf den Hintergrund-Lauf zurück. Bleibt der ältere
+  Chat-Kanal irgendwo im Feld nicht ansprechbar, greift automatisch der
+  bisherige Marker-Weg — **aber nur noch als Notiz, nicht als zweite
+  Zustellung**: Das Ticket wartet dann seine Frist ab, damit du in der Sitzung
+  „zieh dir dein Ticket" sagen kannst, und geht danach in einen
+  Hintergrund-Lauf. Auf Windows gibt es diesen Kanal gar nicht; dort geht das
+  Ticket sofort in den Hintergrund-Lauf, statt sinnlos zu warten. Jeder
+  Zustellversuch wird
+  in `handovers.jsonl` neben `state.json` protokolliert. Wirkt nach
+  Board-Neustart.
+
+- 2026-08-20 — **Handover-Watcher im `werkbank-pull-ticket`-Skill: Fix
+  bereitgelegt.** Der Bash-Block in Schritt 5, mit dem eine Chat-Session
+  auf ein weitergegebenes Ticket wartet, hatte eine kaputte Frist
+  (`$SECONDS`) — sie feuerte sofort, der Watcher beendete Sekunden
+  statt Stunden nach dem Start, und alles, was in der Zwischenzeit
+  weitergegeben wurde, landete still im Hintergrund statt im Chat
+  (WB-259, gemessen 2026-08-20). Ein zweiter Anlauf über eine
+  `/tmp`-Datei starb nach dem nächsten Aufräumen mit `exit 127`. Der
+  Fix (Wanduhr-Frist per `date +%s`, inline im Skill, regulärer Timeout
+  ist kein Fehlschlag mehr, Verifikations-Hinweis) liegt als
+  Übernahme-Vorlage unter `docs/dev/wb259-watcher-loop-patch.md`; das
+  Skill selbst kann aus einem Hintergrund-Lauf nicht überschrieben
+  werden (Schutzregel). **Hinfällig seit dem Wegfall des Wachpostens:** Der
+  Skill liegt inzwischen als v11 ohne diese Schleife bei — es gibt nichts mehr
+  zu flicken, und wer die Anleitung noch befolgt, baut den Wachposten wieder
+  ein, den derselbe Skill jetzt ausdrücklich verbietet.
+
+- 2026-08-19 — **Claude-Backend-dsh-Läufe warten nicht mehr auf die GPU.**
+  Ergänzt WB-238: wenn ein dsh-Ticket „backend: claude" trägt, startet es
+  den lokalen Claude-CLI und **braucht die Grafikkarte nicht**. Bisher
+  landete es trotzdem in derselben Spur wie ein Qwen-Ticket — beide
+  serialisiert, obwohl kein einziger Prozess doppelt auf der GPU rechnete.
+  Jetzt entscheidet die **Werkbank die Spur nach dem Backend, nicht nach
+  dem Bearbeiter-Namen**: ein Claude-Backend-dsh-Ticket geht in die
+  Claude-Spur (pro Projekt einzeln, wie normale claude-Tickets), ein
+  Qwen-Ticket bleibt in der lokalen Spur bei opencode. Beide dürfen jetzt
+  parallel starten. Die alte Zusage „zwei lokale Läufe nie gleichzeitig"
+  bleibt genauso: nur eines der beiden lokalen Modelle spricht mit der
+  Grafikkarte zur Zeit. Wirkt nach Board-Neustart.
+
+- 2026-08-19 — **Pro dsh-Ticket wählen, ob es der lokale Qwen oder Claude
+  fährt.** dsh-Tickets bekamen bisher immer das lokale Modell auf der
+  Grafikkarte. Neu: unter der „Zugewiesen an"-Auswahl erscheint bei
+  `dsh` ein zusätzliches Feld **„Backend"** mit zwei Optionen:
+  - **lokal (Standard)** — GPU auf deinem Rechner, kostet nichts außer
+    Strom (heutiges Verhalten, keine Änderung).
+  - **claude (Claude-CLI, verbraucht Abo-Kontingent)** — der Lauf geht
+    über den lokalen Claude-CLI und belastet dein Abo genauso wie ein
+    normales claude-Ticket. Sinnvoll, wenn ein Qwen-Lauf schon einmal
+    gescheitert ist oder du bewusst die Zeit-Ersparnis suchst
+    (gemessene A/B: Claude 37 s, Qwen 79 s am selben Ticket).
+  Weil so ein Lauf auf der Karte wie ein lokaler aussieht, obwohl er
+  Abo kostet, zeigt die Karte neben der Ticket-Nummer ein kleines
+  **🧠 claude-backend**, wenn du das ausgewählt hast. Bei `claude`
+  oder `opencode` als Bearbeiter ist das Feld unsichtbar und wird bei
+  Fehleinsatz vom Server mit einer klaren Meldung abgelehnt. Wirkt
+  nach Neuladen der Board-Seite; die Server-Änderung greift beim
+  nächsten Board-Neustart.
+
+- 2026-08-19 — **„Beschreibung speichern" bringt keinen komischen Fehler mehr,
+  wenn dein Board älter ist als dein Browser-Formular.** Wenn du im
+  Detail-Dialog die Beschreibung geändert und gespeichert hast, konnte es
+  passieren, dass ein Fehler wie „Unbekannte Felder: gate_gap …" auftauchte
+  — obwohl du das Feld gar nicht angefasst hattest. Grund: dein
+  Ticket-Formular ist eine statische Seite, die die Werkbank bei jedem
+  Request frisch ausliefert (also aktuell), aber der Python-Server läuft
+  weiter mit dem Code, den er beim letzten Start geladen hat. War in dem
+  gerade geladenen Code das neue Feld noch nicht bekannt, schmiss er auf
+  jedes Speichern denselben Fehler — auch wenn du an dem Feld nichts
+  gemacht hast. Ab jetzt schickt das Formular die zwei jüngsten Felder
+  („🗨️ nur interaktiv" und „Prüfung deckt NICHT ab") nur mit, wenn du
+  sie wirklich geändert hast. Dein Server-Neustart ist damit kein
+  Muss mehr, nur weil du die Beschreibung an einem Ticket
+  aktualisieren willst.
+
+- 2026-08-18 — **Verwaister Lauf wird gesehen — und du entscheidest, was passiert.**
+  Wenn die Werkbank neu startet, während ein Ticket läuft, kann es
+  passieren, dass der eigentliche Agenten-Prozess weiterläuft, während
+  niemand mehr sein Ergebnis entgegennimmt. Das Ticket saß dann
+  stumm „In Arbeit" (siehe WB-230, gemessener Vorfall: 73 min so
+  gelaufen). Zwei Änderungen:
+  - **Der Board-Ticker bemerkt so einen Fall jetzt innerhalb weniger
+    Sekunden** und markiert die Karte deutlich: ein roter Balken
+    „⚠ Verwaister Lauf", die Zeile „Prozess läuft weiter, aber sein
+    Ergebnis kommt nirgends mehr an" und ein Knopf **⏹ Beenden**.
+  - **Der Startup-Aufräumer tötet einen laufenden verwaisten Prozess
+    NICHT mehr still**, wie zuvor. Die Karte wird stattdessen
+    markiert; **du** entscheidest, ob der Prozess beendet werden
+    soll. Grund: bis zu einer Stunde Arbeit auf der Platte war
+    zuvor mit dem stillen Kill weg — die Datei-Änderungen des
+    Agenten blieben zwar (git-Verlauf), aber die Entscheidung
+    darüber gehört zu dir. Ein wirklich abgestürzter Lauf (Prozess
+    tot) geht weiter automatisch nach „Fehlgeschlagen".
+
+- 2026-08-18 — **Ticket sagt, was seine Prüfung NICHT abdeckt — und blockiert
+  dann den Autostart.** Im Ticket-Fenster gibt es jetzt ein Feld **„Prüfung
+  deckt NICHT ab"**. Sobald du dort etwas einträgst (z. B. „Layout in der
+  WebView, sieht die Prüfung nicht"), unterbindet die Werkbank den
+  automatischen Start beim Ziehen nach „In Arbeit". Grund: bei allem, was
+  am Bildschirm hängt — Oberfläche, Layout, Animation — beweist ein
+  grünes `pytest`- oder `npm build`-Gate nur, dass es kompiliert und die
+  unveränderte Logik noch läuft. **Nicht** die Abnahme. Statt still ein
+  grünes Häkchen zu produzieren, das nichts bedeutet, geht das Ticket
+  jetzt nur an eine offene Chat-Sitzung im Zielprojekt (wo du am
+  Bildschirm bist) — bei einem lokalen Modell sagt es dir, dass du auf
+  `claude` umstellen sollst, weil das lokale Modell keine Chat-Session
+  hat. Auf der Karte steht sichtbar, warum nicht gestartet wurde. Gilt
+  für **jedes** Modell, auch für Claude. Handbuch-Abschnitt „Prüfung
+  grün ist nicht dasselbe wie abgenommen" erklärt es in einfacher
+  Sprache. Wirkt für neue Klicks nach Board-Neustart.
+
 ## [1.1.0] — 2026-08-18
 
 Sammel-Release nach 1.0.0, in zwei Wellen entstanden.
@@ -229,7 +413,7 @@ an der Werkbank.
   ein Titel auf beide Listen, gewinnt claude (WB-146 „Claude-Läufe
   parallelisieren" hat $28.61 gekostet und hätte einer opencode-
   Fehl-Empfehlung nicht überlebt). Wenn du den Vorschlag überschreibst,
-  wird das leise in `state/router_overrides.jsonl` mitgeschrieben (eine
+  wird das leise in `router_overrides.jsonl neben state.json` mitgeschrieben (eine
   JSON-Zeile pro Fall) — nach ein paar Wochen kannst du damit deine
   Regexe kalibrieren. Wirkt nach Neuladen der Board-Seite.
 

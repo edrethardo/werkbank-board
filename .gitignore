@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 graft/
 state.json
+# WB-263: runtime state, and it carries live SESSION IDS — it was tracked and
+# would have shipped in the 1.2.0 export (found by an adversarial review).
+handovers.jsonl
 .config.lock
 tickets/.lock
 config.json

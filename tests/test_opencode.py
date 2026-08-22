@@ -363,7 +363,7 @@ class PublicConfigTest(unittest.TestCase):
 
 
 class ToolFailureIsNotModelFailureTest(unittest.TestCase):
-    """Measured 2026-08-16 by the coding_agent session: a task too large for
+    """Measured 2026-08-16 by a peer session: a task too large for
     argv made the wrapper exit 126. That is neither 0 nor the endpoint code, so
     the old flow read it as 'ran, produced nothing', retried, and escalated as
     'twice red' — blaming the local model for a tooling limit. The check still

@@ -68,7 +68,7 @@ Ergebnis, `## Fertig, wenn` als Haken-Liste, `gate:` gesetzt. Vorher prüfen mit
 - **config.json NIE roh schreiben** — immer über die gesperrten Helfer
   (`werkbank.projects.set_review_mode`, `add_project`, …). Ein roher
   `json.dump` am laufenden Board vorbei hat am 2026-08-16 das
-  AgentDeck-Häkchen des Nutzers überschrieben (verlorenes Update, WB-116).
+  Häkchen des Nutzers in einem anderen Projekt überschrieben (verlorenes Update, WB-116).
 - **Board nie neu starten** aus einem dispatchten Lauf: der Dispatcher stirbt
   mit, dein Abschluss geht verloren.
 - **Push** nur, wenn die Projektregeln das ausdrücklich vorsehen.
@@ -85,6 +85,8 @@ Fakten sammeln, bevor du zusammenfasst:
 ## 4. Doku- und Journal-Pflicht (nur wenn das Zielprojekt sie hat)
 
 Zielprojekt hat `docs/journal/INDEX.md` → **Journal-Eintrag** ist Pflicht
+(prüfen, nicht annehmen: in einer frisch geklonten Kopie kann der Ordner
+fehlen — dann gilt der Fall „kein Journal“ weiter unten)
 (`journaling`-Skill), im selben Commit wie die Änderung; das Ticket-Ergebnis
 darf dann kurz sein und aufs Journal verweisen. Kein Journal → das
 Ticket-Ergebnis IST der vollständige Bericht.

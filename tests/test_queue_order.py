@@ -165,6 +165,17 @@ class BoardMatchesDispatcherTest(unittest.TestCase):
         tickets = store.load_tickets(self.dir)
         self.assertEqual(self._board_order(tickets), _dispatcher_order(tickets))
 
+    def test_the_phone_sorts_the_queue_too(self):
+        """WB-253: WB-203 taught only the desktop column the real order. The
+        phone kept showing ticket-number order — on the device the owner
+        actually uses to look at the board."""
+        board = (Path(__file__).resolve().parent.parent
+                 / "src" / "werkbank" / "board.html").read_text(encoding="utf-8")
+        phone = board[board.index("function renderPhone("):]
+        phone = phone[:phone.index("\n}")]
+        self.assertIn("queueOrder(", phone,
+                      "renderPhone renders the queue column unsorted again")
+
     def test_non_queue_columns_keep_their_incoming_order(self):
         """Only the queue is a queue. Reordering Review would be a lie."""
         script = self.js / "keep.js"
@@ -281,6 +292,44 @@ class MoveToEndpointTest(unittest.TestCase):
         t = store.create_ticket(self.dir, "Offen", "x", project="/p")
         self.assertEqual(self._post(f"/api/tickets/{t.id}/move-to",
                                     {"index": 0})[0], 400)
+
+    def _with_gates(self):
+        """The handler re-reads `gates` from config.json on EVERY request
+        (WB-124), so an in-memory CONFIG alone is silently overwritten."""
+        import json
+        cfg = self.dir / "config.json"
+        cfg.write_text(json.dumps({"gates": {"/p": {"Tests laufen durch": "true"}}}),
+                       encoding="utf-8")
+        self._saved_root = self.server_mod.REPO_ROOT
+        self.server_mod.REPO_ROOT = self.dir
+        self.addCleanup(setattr, self.server_mod, "REPO_ROOT", self._saved_root)
+        self.server_mod.CONFIG["gates"] = {"/p": {"Tests laufen durch": "true"}}
+
+    def test_an_unknown_gate_is_refused_at_creation(self):
+        """WB-263: the board's dropdown cannot produce an unknown gate name,
+        but the API and the skills can — and it used to be accepted here and
+        fail minutes later at dispatch. A deferred failure is the thing this
+        project keeps apologising for."""
+        self._with_gates()
+        status, body = self._post("/api/tickets",
+                                  {"title": "T", "description": "x",
+                                   "project": "/p", "gate": "tests"})
+        self.assertEqual(status, 400)
+        self.assertIn("Tests laufen durch", body["error"],
+                      "the refusal must name the real choices")
+
+    def test_a_known_gate_is_accepted(self):
+        self._with_gates()
+        status, _ = self._post("/api/tickets",
+                               {"title": "T", "description": "x",
+                                "project": "/p", "gate": "Tests laufen durch"})
+        self.assertEqual(status, 200)
+
+    def test_no_gate_at_all_stays_allowed(self):
+        """Most tickets name none; the dispatch decides who needs one."""
+        status, _ = self._post("/api/tickets",
+                               {"title": "T", "description": "x", "project": "/p"})
+        self.assertEqual(status, 200)
 
     def test_a_nonsense_index_is_400_not_a_crash(self):
         t = store.create_ticket(self.dir, "T", "x", project="/p")

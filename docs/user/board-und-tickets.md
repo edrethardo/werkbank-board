@@ -212,9 +212,12 @@ Chat-Unterhaltung** (weil der Assistent dort zuletzt ein Ticket bearbeitet
 hat), wird nicht heimlich im Hintergrund gearbeitet: Das Ticket wird der
 offenen Unterhaltung übergeben — der Assistent meldet sich dort und bearbeitet
 es sichtbar vor deinen Augen. Die Karte zeigt solange „an Chat-Session
-übergeben". Übernimmt der Chat nicht binnen weniger Minuten (Fenster zu,
-Session beendet), startet automatisch der gewohnte Hintergrund-Lauf als
-Abzweigung — nichts bleibt hängen. Angehakte ⑂-Checkbox heißt: bewusst ohne
+übergeben". Ist die Sitzung **gar nicht mehr da** (Fenster zu, beendet), merkt
+das Board es sofort und startet **ohne Wartezeit** den gewohnten
+Hintergrund-Lauf als Abzweigung. Antwortet sie zwar, meldet sich aber nicht,
+wartet das Ticket seine Frist ab — damit du in der Sitzung noch „zieh dir dein
+Ticket" sagen kannst — und geht danach in den Hintergrund-Lauf. Nichts bleibt
+hängen. Angehakte ⑂-Checkbox heißt: bewusst ohne
 Übergabe, direkt im Hintergrund.
 
 Alternativ geht es weiter per Chat: **„Arbeite die Tickets ab"** (oder gezielt:
@@ -229,6 +232,68 @@ Alternativ geht es weiter per Chat: **„Arbeite die Tickets ab"** (oder gezielt
    Knöpfe: **„Annehmen"** schiebt das Ticket nach **Erledigt**. **„Ablehnen"**
    fragt dich nach dem Grund (Pflichtfeld), schreibt ihn ins Ticket und schiebt es
    zurück nach **Offen**, damit nachgebessert wird.
+
+### Große Vorhaben: das Epic
+
+Manches ist zu groß für ein Ticket („bau mir eine Studio-Aufnahme"). Dafür gibt
+es den Ticket-Typ **Epic**. Ein Epic wird nicht abgearbeitet, sondern
+**geplant**: Ziehst du es nach „In Arbeit", geht es an eine offene Chat-Sitzung
+im Zielprojekt, ihr besprecht dort den Zuschnitt, und heraus kommen mehrere
+normale Tickets — jedes mit dem Epic als Elternteil. Auf der Epic-Karte siehst
+du danach, wie viele seiner Kinder schon fertig sind.
+
+Ist im Zielprojekt gerade keine Chat-Sitzung angemeldet, legt sich das Epic
+zurück nach **Offen** und sagt dir das — statt still im Hintergrund zu planen,
+wo niemand mitreden kann.
+
+### „🗨️ Besprechen" und das Häkchen „nur interaktiv"
+
+Auf offenen Karten sitzt **🗨️ Besprechen**: Damit geht das Ticket bewusst in
+eine Chat-Sitzung statt in einen Hintergrund-Lauf — sinnvoll, wenn du beim
+Bearbeiten mitreden willst. Dasselbe dauerhaft für ein Ticket: das Häkchen
+**„nur interaktiv"** im Ticket-Fenster. Ohne offene Sitzung im Zielprojekt
+kommt das Ticket zurück nach Offen, mit einer Zeile, was zu tun ist.
+
+Bei `opencode` und `dsh` hat beides keine Wirkung — die haben keine
+Unterhaltung, in der man etwas besprechen könnte.
+
+### „⚠ Verwaister Lauf"
+
+Wenn ein Agent noch arbeitet, aber der Teil des Boards, der sein Ergebnis
+entgegennehmen würde, nicht mehr da ist (Board neu gestartet, Lauf von
+außerhalb gestartet), steht das jetzt auf der Karte: **„⚠ Verwaister Lauf"**.
+
+Das Board **beendet ihn nicht von selbst** — es hat einmal eine Stunde Arbeit
+ohne Rückfrage gelöscht, das soll nicht wieder passieren. Stattdessen
+entscheidest du: laufen lassen und das Ergebnis im Zielprojekt anschauen, oder
+über den Knopf auf der Karte sauber beenden.
+
+### Wenn die Prüfung nicht alles beweist
+
+Manche Arbeit lässt sich nicht automatisch abnehmen — eine Oberfläche, eine
+Animation, etwas, das man **sehen** muss. Die Prüfung meldet dann grün, weil
+der Code übersetzt und die alten Tests noch laufen, und sagt trotzdem nichts
+darüber, ob es funktioniert.
+
+Für diesen Fall hat das Ticket ein Feld: **„Prüfung deckt nicht ab"**. Schreib
+dort hinein, was die Prüfung *nicht* beweist („dass die Vorschau wirklich
+erscheint"). Zwei Dinge passieren dann:
+
+- Das Ticket **startet nicht mehr von selbst** — es wartet auf ein Menschenauge,
+  statt loszulaufen und hinterher grün zu melden.
+- Auf der Karte steht ein Warnzeichen mit deinem Text, damit sichtbar ist,
+  *warum* nichts automatisch passiert.
+
+Leer lassen heißt: Die Prüfung deckt die Abnahme ab. Das ist der Normalfall.
+
+### Bei `dsh`: lokales Modell oder Claude
+
+`dsh`-Tickets haben zusätzlich das Feld **„Backend"**. Leer bedeutet: das Modell
+auf deinem eigenen Rechner (kostet nichts, braucht die Grafikkarte). Stellst du
+es auf **claude**, läuft derselbe Weg über Claude — das **verbraucht dein
+Kontingent**, belegt dafür die Grafikkarte nicht und läuft deshalb auch
+parallel zu einem lokalen Lauf. Auf der Karte steht dann sichtbar, welches
+Backend gelaufen ist.
 
 ### Eine zweite Meinung einholen: 🔍 Review-Bot
 
@@ -295,6 +360,36 @@ Konfiguration, nicht im Ticket: Über das Board wandert nur der **Name** einer
 Prüfung, nie ein ausführbarer Befehl. Sonst könnte jemand, der ans Board kommt,
 sich damit Befehle auf deinem Rechner ausführen lassen.
 
+### „Prüfung grün" ist nicht dasselbe wie „abgenommen"
+
+Die Regel „nicht die Selbstauskunft entscheidet, sondern die Prüfung" gilt nur,
+solange die Prüfung die Akzeptanzkriterien wirklich **ausführt**. Bei allem, was
+am Bildschirm hängt — Oberfläche, Layout, Animation, Overlays, Klick-Verhalten —
+sieht ein `pytest`- oder `npm build`-Gate nur, dass es **kompiliert und dass die
+unveränderte Logik noch läuft**. Ein Agent kann in so einem Fall gruen melden,
+während die View leer bleibt. Das gilt für **jedes** Modell, auch für Claude —
+es ist keine Aussage über Modellqualität, sondern über die Reichweite der
+Prüfung.
+
+Deshalb gibt es im Ticket-Fenster ein Feld **„Prüfung deckt NICHT ab"**. Sobald
+du dort etwas einträgst (z. B. „Layout in der WebView, sieht die Prüfung
+nicht"), unterbindet die Werkbank den **Autostart**. Das Ticket geht dann NUR
+noch an eine offene Chat-Sitzung im Zielprojekt — dort, wo du selbst am
+Bildschirm bist und die visuelle Abnahme leisten kannst. Auf der Karte steht
+sichtbar, WARUM nicht automatisch gestartet wurde, damit du nicht rätseln
+musst.
+
+- **Feld leer** → alles wie vorher, Prüfung entscheidet.
+- **Feld gesetzt** → kein Autostart, auch nicht auf dem lokalen Modell (dort
+  besonders nicht — es hat keine Chat-Session, sagt dir das Ticket dann und
+  bittet dich, auf `claude` umzustellen).
+- **Chat-Sitzung offen** → das Ticket wird an sie übergeben (WB-22-Weg).
+- **Keine Chat-Sitzung offen** → das Ticket bleibt in **Offen** liegen, mit
+  einer klaren Meldung, was du tun musst („Öffne Claude Code im Projekt und
+  sag ‚zieh dir dein Ticket'").
+
+Lieber gar kein Autostart als ein grünes Häkchen, das nichts bedeutet.
+
 ## Die Warteschlange „Zu bearbeiten"
 
 Statt jedes Ticket einzeln zu ziehen, kannst du mehrere in die Spalte **Zu
@@ -327,7 +422,10 @@ Andere Projekte halten deine Warteschlange nie auf — jedes Projekt hat seine
 eigene Reihe. Und es sind **zwei Spuren** am Werk: Die **Claude-Spur** und die
 Spur deines **eigenen Modells** — auf der laufen `opencode` und `dsh`
 gemeinsam, weil sie sich dieselbe Grafikkarte teilen. Innerhalb einer Spur
-arbeitet immer nur einer; die beiden Spuren laufen **parallel** nebeneinander.
+arbeitet immer nur einer **pro Projekt**; die beiden Spuren laufen
+**parallel** nebeneinander. Die Claude-Spur kann zusätzlich mehrere Projekte
+gleichzeitig bearbeiten — die Spur des lokalen Modells nicht, dort teilen sich
+alle dieselbe Grafikkarte.
 Läuft gerade ein Claude-Agent, kann gleichzeitig ein Ticket des lokalen
 Modells auf der anderen Spur weiterarbeiten — und umgekehrt. Warte ein Ticket auf seine Spur, weil dort
 schon ein Agent dran ist, sagt die Karte dir das auch (warum sie gerade
@@ -377,7 +475,7 @@ Ein Ticket kann statt vom Board auch **direkt in einem Chat** bearbeitet werden.
 Dann läuft kein Agenten-Lauf, den das Board beobachten könnte — es weiß nur, dass
 eine Sitzung das Ticket beansprucht hat. Genau das steht jetzt auch da:
 
-- **„🗨️ seit 3 min von Chat-Sitzung 66268d15… bearbeitet"** — der Anspruch steht,
+- **„🗨️ seit 3 min von Chat-Sitzung a1b2c3d4… bearbeitet"** — der Anspruch steht,
   wie lange, siehst du.
 - Nach **zehn Minuten ohne Ergebnis** wird die Zeile rot: **„⚠️ seit 12 min
   beansprucht, kein Ergebnis"**. Das heißt nicht sicher, dass nichts passiert —

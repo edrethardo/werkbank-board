@@ -7,7 +7,7 @@ summary: WB-51 trimmed the README's feature list from nine dense bullets to four
 
 # Board internals
 
-The README lists four things the board does; this doc keeps the details
+The README lists what the board does; this doc keeps the details
 that used to hang off those bullets and the small design decisions behind
 them. Nothing here is required reading to use the tool — that's the whole
 point of moving it out of the README.
@@ -28,6 +28,24 @@ point of moving it out of the README.
 - On phones/tablets the seven columns collapse to one list plus status
   chips at the top; swipe horizontally to change columns
   (`SWIPE_MIN = 40`, `SWIPE_RATIO = 1.5` after WB-68 round two).
+
+## Handing a ticket to an open chat (WB-258)
+
+`messaging.deliver()` writes one JSON line into the session's own messaging
+socket, found by scanning the sessions directory for a file whose `sessionId`
+matches the id registered for the project. Outcomes are values, never
+exceptions:
+
+| result | what the dispatcher does |
+|---|---|
+| `DELIVERED` | marker set, waits `chat_handover_minutes` for the claim |
+| `NO_SESSION_FILE`, `DEAD_SOCKET` | straight to a background run — nobody is there |
+| `NO_SOCKET_SUPPORT` | same, and the honest Windows path: no AF_UNIX at all |
+| `WRONG_PROTOCOL`, `ERROR` | marker set as an audit trail; the wait now only gives the USER time to say „zieh dir dein Ticket" |
+
+There is **no polling watcher** any more. The loop it replaced failed twice
+(WB-77, WB-259) and is forbidden in the skills; a handover that does not
+arrive is a delivery bug, not a reason to poll.
 
 ## Queue mechanics
 
@@ -76,16 +94,20 @@ point of moving it out of the README.
 - **Orphan sweep** at startup — a ticket left in `in_arbeit` after a
   board restart is surfaced as `fehlgeschlagen` (WB-17); if the
   ex-worker's `claude` process is still alive and its command line
-  matches the ticket, it is killed as part of the sweep (WB-75).
+  matches the ticket, the run is NOT killed any more (WB-230): the ticket is
+  marked `orphaned: ja`, the card says a run is going with nobody to receive
+  its result, and the user decides. Killing an hour of work without asking was
+  the wrong default.
 - **Broken ticket quarantine** — one unreadable file no longer takes the
   whole board down; readable tickets show normally and the broken file
   is called out at the top with its parser error.
 - **Chat handover** — if the last worker for a project is a live chat
   session, a dispatched ticket is handed over there and worked visibly
   for you; the deadline for the chat to claim (default 5 min) lives in
-  the ticket file so it survives board restarts (WB-66). The watcher
-  itself is a `bash` loop and is therefore Unix-only; on Windows the
-  fallback background run kicks in without a claim attempt.
+  the ticket file so it survives board restarts (WB-66). Delivery needs a
+  unix socket, which Windows does not have — the board detects that
+  (`NO_SOCKET_SUPPORT`) and goes straight to the background run instead of
+  waiting for a claim that cannot arrive.
 
 ## Multi-project + skills
 

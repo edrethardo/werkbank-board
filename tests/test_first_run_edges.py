@@ -99,6 +99,89 @@ class SilentLanModeTest(unittest.TestCase):
         self.assertIsNone(server.exposure_refusal("127.0.0.1", True, ""))
 
 
+class HalfFilledConfigTest(unittest.TestCase):
+    """WB-263: a config.json that sets only the port passed silently.
+
+    The defaults leave `default_project` on the Werkbank checkout, so the first
+    dragged ticket would set a Bash-capable agent loose on the board's own
+    repository. WB-48 built this warning for the missing-config case and never
+    covered the half-filled one — found by a review that walked a first run on
+    a fresh machine, not by the suite."""
+
+    def test_a_config_without_a_project_is_called_out(self):
+        from werkbank import setup
+        w = setup.config_warning(
+            {"default_project": "/repo", "default_project_in_file": False},
+            True, "/repo")
+        self.assertIsNotNone(w)
+        self.assertIn("default_project", w)
+        self.assertIn("Befehls-Rechten", w, "say what actually happens")
+
+    def test_a_configured_project_stays_quiet(self):
+        from werkbank import setup
+        self.assertIsNone(
+            setup.config_warning({"default_project": "/mein/projekt"}, True, "/repo"))
+
+    def test_pointing_the_board_at_itself_on_purpose_stays_quiet(self):
+        """It is how this tool was built — only the UNSET field is the
+        accident, and an existing test (test_deliberate_choice_is_silent)
+        caught the first version of this fix for exactly that reason."""
+        from werkbank import setup
+        self.assertIsNone(setup.config_warning(
+            {"default_project": "/repo", "default_project_in_file": True},
+            True, "/repo"))
+
+    def test_the_warning_is_backed_by_an_actual_REFUSAL(self):
+        """WB-263 round 4: the first version of this fix only warned. A banner
+        does not stop the drag, and the user who does not read banners is
+        exactly who the guard is for — the missing-config twin has refused
+        since WB-48, the half-filled one did not."""
+        from werkbank import setup
+        cfg = {"repo_root": "/repo", "config_exists": True,
+               "default_project_in_file": False}
+        refusal = setup.dispatch_refusal(cfg, "/repo")
+        self.assertIsNotNone(refusal, "the ticket would still start")
+        self.assertIn("default_project", refusal)
+        self.assertIn("Befehls-Rechten", refusal)
+
+    def test_a_deliberate_self_target_still_dispatches(self):
+        """Aiming the board at its own repository on purpose is how this tool
+        was built — the refusal must not touch it."""
+        from werkbank import setup
+        self.assertIsNone(setup.dispatch_refusal(
+            {"repo_root": "/repo", "config_exists": True,
+             "default_project_in_file": True}, "/repo"))
+
+    def test_another_project_is_never_refused(self):
+        from werkbank import setup
+        self.assertIsNone(setup.dispatch_refusal(
+            {"repo_root": "/repo", "config_exists": True,
+             "default_project_in_file": False}, "/ganz/woanders"))
+
+    def test_the_missing_config_case_still_works(self):
+        from werkbank import setup
+        w = setup.config_warning({"default_project": "/repo"}, False, "/repo")
+        self.assertIn("Keine config.json", w)
+
+
+class RunLogPathTest(unittest.TestCase):
+    """The detail dialog printed /tmp/werkbank-agent-<id>.log — a path that has
+    not existed since WB-35 moved logs into the user's state dir with 0700.
+    Anyone in an audience who typed it hit nothing."""
+
+    def test_the_page_does_not_hardcode_a_log_path(self):
+        board = (Path(__file__).resolve().parent.parent
+                 / "src" / "werkbank" / "board.html").read_text(encoding="utf-8")
+        self.assertNotIn("/tmp/werkbank-agent-", board)
+        self.assertIn("config.log_dir", board)
+
+    def test_the_server_publishes_the_real_directory(self):
+        from werkbank import dispatch, server
+        safe = server.public_config({"gates": {}, "password_hash": "secret"})
+        self.assertEqual(safe["log_dir"], str(dispatch.log_dir()))
+        self.assertNotIn("password_hash", safe, "still no hash to the browser")
+
+
 class WorkerErrorTextTest(unittest.TestCase):
     def test_a_missing_program_names_the_setting_not_the_errno(self):
         text = dispatch.worker_error_text(

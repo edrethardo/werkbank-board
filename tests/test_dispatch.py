@@ -47,6 +47,21 @@ def wait_until(condition, timeout=5.0, interval=0.02):
     return condition()
 
 
+def force_marker_handover(test):
+    """WB-258: `messaging.deliver` now scans the user's .claude/sessions directory for a real
+    live chat — a test session id will not be there, so my new "no session
+    file" branch skips the marker and runs the background instead. Tests
+    that assert the marker-based WB-22 path must opt out of the direct
+    delivery attempt; this returns WRONG_PROTOCOL so the code keeps the
+    old marker + fallback path."""
+    from unittest import mock
+    patcher = mock.patch.object(dispatch.messaging, "deliver",
+                                return_value=dispatch.messaging.DeliveryResult.WRONG_PROTOCOL)
+    m = patcher.start()
+    test.addCleanup(patcher.stop)
+    return m
+
+
 def make_dispatcher(test, *args, **kwargs):
     """A Dispatcher whose ticker is ALWAYS stopped when the test ends.
 
@@ -623,11 +638,12 @@ class SweepOrphanedTest(unittest.TestCase):
 
 
 class SweepKillsOrphanProcessTest(unittest.TestCase):
-    """WB-75: a claude process outlives its board when the board restarts.
-    Sweep must find it (via the PID we recorded) and end it — but ONLY if the
-    process really is that ticket's run (cmdline check guards against PID
-    reuse and blind name-kills). A stand-in process stands in for claude so
-    the test never touches the real CLI or the quota."""
+    """WB-75 → WB-230: a claude process outlives its board when the board
+    restarts. Sweep must FIND it (via the PID we recorded, cmdline check
+    guards against PID reuse and blind name-kills). WB-230 changed the
+    outcome: the sweep no longer kills a live matching process — it
+    marks the ticket `orphaned=ja` and lets the user decide via the
+    card's Beenden-Knopf. Decoys stay untouched either way."""
 
     def setUp(self):
         self.dir = temp_dir()
@@ -679,22 +695,23 @@ class SweepKillsOrphanProcessTest(unittest.TestCase):
         swept = dispatch.sweep_orphaned(self.dir)
         self.assertEqual(swept, [target.id], f"cmdline gelesen: {seen!r}")
 
-        # Matching process is dead — wait for OS to reap.
-        end = time.time() + 3
-        while time.time() < end and orphan.poll() is None:
-            time.sleep(0.05)
-        self.assertIsNotNone(
+        # WB-230: live matching process must STAY alive — the "silent kill"
+        # was the very cost the bug ticket protested (up to an hour of
+        # on-disk work would be lost with no user confirmation).
+        self.assertIsNone(
             orphan.poll(),
-            f"orphan not killed; _read_cmdline said: {seen!r} "
-            f"(match={dispatch._process_matches_ticket(orphan.pid, target.id)})")
-        # Decoys still running.
+            f"orphan was killed by sweep_orphaned; WB-230 says leave it. "
+            f"_read_cmdline said: {seen!r}")
+        # Decoys still running either way.
         self.assertIsNone(decoy_claude.poll())
         self.assertIsNone(decoy_named.poll())
 
         loaded = {t.id: t for t in store.load_tickets(self.dir)}[target.id]
-        self.assertEqual(loaded.status, "fehlgeschlagen")
-        self.assertEqual(loaded.pid, "")
-        self.assertIn("beendet", loaded.body)
+        # New shape: still in_arbeit but flagged, with the German note that
+        # names the Beenden route.
+        self.assertEqual(loaded.status, "in_arbeit")
+        self.assertEqual(loaded.orphaned, "ja")
+        self.assertIn("Verwaister Lauf", loaded.body)
         self.assertIn(str(orphan.pid), loaded.body)
 
     def test_stale_pid_without_matching_cmdline_is_not_killed(self):
@@ -839,6 +856,7 @@ class HandoverTest(unittest.TestCase):
         self.t = store.create_ticket(self.dir, title="Uebergabe", description="")
         store.update_ticket(self.dir, self.t.id, {"status": "in_arbeit"})
         self.calls = []
+        force_marker_handover(self)
 
     def tearDown(self):
         remove_tree(self.dir)
@@ -945,6 +963,7 @@ class PerProjectLineageTest(unittest.TestCase):
     project — two projects never share a lineage."""
 
     def test_handover_targets_the_tickets_own_project_session(self):
+        force_marker_handover(self)
         base = temp_dir()
         try:
             proj_a, proj_b = base / "a", base / "b"
@@ -1390,6 +1409,7 @@ class HandoverDeadlineTest(unittest.TestCase):
                                      project=str(self.dir))
         store.update_ticket(self.dir, self.t.id, {"status": "in_arbeit"})
         self.started = []
+        force_marker_handover(self)
 
     def tearDown(self):
         for d in getattr(self, "_dispatchers", []):
@@ -1453,6 +1473,7 @@ class HandoverGivesUpTest(unittest.TestCase):
         store.update_ticket(self.dir, self.t.id, {"status": "in_arbeit"})
         self.started = []
         self.dispatchers = []
+        force_marker_handover(self)
 
     def tearDown(self):
         for d in self.dispatchers:
@@ -2525,6 +2546,7 @@ class Wb161EpicDispatchTest(unittest.TestCase):
         self.assertIn("zieh dir dein Ticket", after.body)
 
     def test_epic_with_chat_session_uses_wb22_handover(self):
+        force_marker_handover(self)
         dispatch.register_ticket_session(str(self.dir), "chat-epic",
                                          self.state)
         d = self._dispatcher()
@@ -3010,6 +3032,657 @@ class Wb175RouterBoardShapeTest(unittest.TestCase):
                       self.board)
 
 
+class Wb230LiveOrphanTest(unittest.TestCase):
+    """WB-230: the incident. Dispatcher died, agent process kept running
+    for 73 min, ticket sat in in_arbeit, nobody caught the output. The
+    ticker must NOTICE (not just sweep_orphaned at startup), the
+    detection must NOT kill the live process (that was the WB-75
+    "silent kill" the bug ticket protested), and the user's Beenden
+    call must both kill the process and set fehlgeschlagen."""
+
+    def setUp(self):
+        self.dir = temp_dir()
+        self.procs = []
+
+    def tearDown(self):
+        for p in self.procs:
+            try: p.kill()
+            except OSError: pass
+            try: p.wait(timeout=2)
+            except Exception: pass
+        remove_tree(self.dir)
+
+    def _spawn_for(self, ticket_id):
+        # Same stand-in shape as SweepKillsOrphanProcessTest — 'claude' +
+        # the ticket id in argv make _process_matches_ticket agree.
+        p = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(3600)",
+             "claude", "-p", f"prompt for {ticket_id}"])
+        self.procs.append(p)
+        return p
+
+    @posix_only
+    def test_ticker_detects_live_orphan_and_marks_the_ticket(self):
+        """The exact incident shape: ticket in_arbeit with a live process
+        whose pid the dispatcher does NOT own — must be detected within
+        one tick. Uses a fresh dispatcher whose _runs is empty (the
+        original owner "died"); calls detect_live_orphans directly so
+        the test does not have to wait for the 15 s tick."""
+        t = store.create_ticket(self.dir, title="Verwaist", description="")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+        p = self._spawn_for(t.id)
+        store.update_ticket(self.dir, t.id, {"pid": str(p.pid)})
+
+        d = make_dispatcher(self, self.dir)
+        # _runs is empty by construction — this is the exact shape the
+        # incident reached (dispatcher restarted, in-memory table gone).
+        d.detect_live_orphans()
+
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.orphaned, "ja")
+        self.assertEqual(loaded.status, "in_arbeit")
+        self.assertIsNone(p.poll(), "detect_live_orphans MUST NOT kill "
+                          "the process — that decision belongs to the user")
+        self.assertIn("Verwaister Lauf", loaded.body)
+        self.assertIn(str(p.pid), loaded.body)
+
+    @posix_only
+    def test_dispatcher_own_run_is_not_flagged_as_orphan(self):
+        """Regression pin: a ticket the dispatcher itself is running
+        (i.e., in `_runs`) must NEVER be flagged, even if all other
+        surface signals look identical."""
+        t = store.create_ticket(self.dir, title="Ich arbeite dran",
+                                description="")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+        p = self._spawn_for(t.id)
+        store.update_ticket(self.dir, t.id, {"pid": str(p.pid)})
+
+        d = make_dispatcher(self, self.dir)
+        d._runs[t.id] = {"pid": p.pid}      # simulate active ownership
+        try:
+            d.detect_live_orphans()
+        finally:
+            d._runs.pop(t.id, None)
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.orphaned, "")
+
+    def test_detect_live_orphans_ignores_dead_pids(self):
+        """A pid that is not alive is sweep_orphaned's problem, not the
+        ticker's — the ticker only flags LIVE orphans. This keeps the
+        crash-during-run case flowing to `fehlgeschlagen` at startup."""
+        t = store.create_ticket(self.dir, title="Toter Lauf", description="")
+        store.update_ticket(self.dir, t.id,
+                            {"status": "in_arbeit", "pid": "1"})  # PID 1 is init; doesn't match
+        d = make_dispatcher(self, self.dir)
+        d.detect_live_orphans()
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.orphaned, "")
+
+    def test_already_flagged_ticket_is_not_rewritten(self):
+        """Idempotency: repeated ticks must not spam set_result with the
+        same message every 15 s."""
+        t = store.create_ticket(self.dir, title="Schon markiert",
+                                description="")
+        store.update_ticket(self.dir, t.id,
+                            {"status": "in_arbeit", "orphaned": "ja"})
+        p = self._spawn_for(t.id)
+        store.update_ticket(self.dir, t.id, {"pid": str(p.pid)})
+        before_body = {x.id: x for x in
+                       store.load_tickets(self.dir)}[t.id].body
+        d = make_dispatcher(self, self.dir)
+        d.detect_live_orphans()
+        after = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(after.body, before_body,
+                         "detect_live_orphans must be idempotent on "
+                         "an already-flagged ticket")
+
+    @posix_only
+    def test_mark_orphan_failed_kills_and_flips_status(self):
+        """The Beenden-Knopf: user-initiated termination + fehlgeschlagen."""
+        t = store.create_ticket(self.dir, title="Nutzer entscheidet",
+                                description="")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit",
+                                             "orphaned": "ja"})
+        p = self._spawn_for(t.id)
+        store.update_ticket(self.dir, t.id, {"pid": str(p.pid)})
+
+        result = dispatch.mark_orphan_failed(self.dir, t.id)
+
+        self.assertTrue(result["terminated"])
+        self.assertEqual(result["pid"], p.pid)
+        end = time.time() + 3
+        while time.time() < end and p.poll() is None:
+            time.sleep(0.05)
+        self.assertIsNotNone(p.poll(),
+                             "mark_orphan_failed must actually end the process")
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.status, "fehlgeschlagen")
+        self.assertEqual(loaded.orphaned, "")
+        self.assertEqual(loaded.pid, "")
+        self.assertIn("Beendet", loaded.body)
+
+    def test_mark_orphan_failed_handles_dead_process_cleanly(self):
+        """Race: user clicks Beenden after the process already died on
+        its own. No terminate happens, but the ticket still lands in
+        fehlgeschlagen with an honest note."""
+        t = store.create_ticket(self.dir, title="Schon tot", description="")
+        # PID 1 = init; not ours, so _process_matches_ticket is False.
+        store.update_ticket(self.dir, t.id,
+                            {"status": "in_arbeit", "orphaned": "ja",
+                             "pid": "1"})
+        result = dispatch.mark_orphan_failed(self.dir, t.id)
+        self.assertFalse(result["terminated"])
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.status, "fehlgeschlagen")
+        self.assertEqual(loaded.orphaned, "")
+
+    @posix_only
+    def test_sweep_orphaned_no_longer_kills_live_matching_process(self):
+        """The very cost WB-230 protested: sweep_orphaned used to kill
+        the live process silently and drop up to 40 min of on-disk
+        work. Now it must LEAVE the process alone and mark the ticket."""
+        t = store.create_ticket(self.dir, title="Lebt weiter", description="")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+        p = self._spawn_for(t.id)
+        store.update_ticket(self.dir, t.id, {"pid": str(p.pid)})
+
+        dispatch.sweep_orphaned(self.dir)
+
+        # Still alive; ticket still in_arbeit but flagged.
+        self.assertIsNone(p.poll())
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.status, "in_arbeit")
+        self.assertEqual(loaded.orphaned, "ja")
+
+    def test_sweep_orphaned_still_fails_dead_runs(self):
+        """The crash-mid-run case must keep flowing to `fehlgeschlagen` —
+        WB-230 only changed the LIVE branch."""
+        t = store.create_ticket(self.dir, title="Abgestürzt", description="")
+        store.update_ticket(self.dir, t.id,
+                            {"status": "in_arbeit", "pid": "999999999"})
+        dispatch.sweep_orphaned(self.dir)
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.status, "fehlgeschlagen")
+        self.assertEqual(loaded.pid, "")
+
+    def test_adopt_orphans_skips_flagged_tickets(self):
+        """WB-230 must not accidentally re-dispatch a live orphan through
+        adopt_orphans — that would fork the run and produce two writers."""
+        t = store.create_ticket(self.dir, title="Markiert", description="",
+                                assignee="claude")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit",
+                                             "orphaned": "ja"})
+        d = make_dispatcher(self, self.dir)
+        called = []
+        d.dispatch = lambda tid: called.append(tid)  # spy
+        d.adopt_orphans()
+        self.assertEqual(called, [],
+                         "adopt_orphans must not re-dispatch an orphaned=ja ticket")
+
+
+class Wb230BoardShapeTest(unittest.TestCase):
+    """WB-230: card renders the orphan warning + Beenden button."""
+
+    def setUp(self):
+        self.board = (Path(__file__).resolve().parent.parent
+                      / "src/werkbank/board.html").read_text(encoding="utf-8")
+
+    def test_card_renders_orphaned_state(self):
+        self.assertIn('t.orphaned === "ja"', self.board)
+        self.assertIn("Verwaister Lauf", self.board)
+        # Button POSTs to the WB-230 endpoint.
+        self.assertRegex(self.board,
+                         r'/api/tickets/"\s*\+\s*t\.id\s*\+\s*"/kill-orphan')
+
+
+class Wb226GateGapTest(unittest.TestCase):
+    """WB-226: a ticket that names something its configured gate does NOT
+    prove (`gate_gap` set) is not autostarted — the runner never fires,
+    the card bounces back to Offen with the gap text and a next-step hint.
+    Applies to BOTH lanes: the local one has no chat-session escape hatch,
+    so its message tells the user to reassign to claude."""
+
+    def setUp(self):
+        self.dir = temp_dir()
+        self.state = self.dir / "state.json"
+        self.calls = []
+        self.opencode_calls = []
+
+    def tearDown(self):
+        remove_tree(self.dir)
+
+    def _dispatcher(self):
+        def runner(t, on_start=None):
+            self.calls.append(t.id)
+            return "hintergrund", "sess-bg"
+        return make_dispatcher(self,
+            self.dir, cfg={"state_path": str(self.state),
+                           "default_project": str(self.dir),
+                           "chat_handover_minutes": 10,
+                           "gates": {str(self.dir):
+                                     {"Tests laufen durch": "true"}}},
+            runner=runner)
+
+    def _load(self, tid):
+        return {x.id: x for x in store.load_tickets(self.dir)}[tid]
+
+    def test_field_roundtrips_and_collapses_newlines(self):
+        t = store.create_ticket(
+            self.dir, title="X", description="Y",
+            gate_gap="Layout\nin der WebView")   # multi-line paste
+        loaded = self._load(t.id)
+        # One-line frontmatter invariant: newlines collapse to a space.
+        self.assertNotIn("\n", loaded.gate_gap)
+        self.assertIn("Layout", loaded.gate_gap)
+        self.assertIn("WebView", loaded.gate_gap)
+        # PATCH-write path normalises the same way.
+        store.update_ticket(self.dir, t.id,
+                            {"gate_gap": "andere\r\nSache"})
+        self.assertEqual(self._load(t.id).gate_gap, "andere Sache")
+        # Empty back to normal.
+        store.update_ticket(self.dir, t.id, {"gate_gap": ""})
+        self.assertEqual(self._load(t.id).gate_gap, "")
+
+    def test_gate_gap_blocks_claude_autostart_and_bounces_to_offen(self):
+        t = store.create_ticket(
+            self.dir, title="UI-Ticket", description="",
+            project=str(self.dir),
+            gate_gap="Layout in der WebView, sieht die Prüfung nicht")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+        d = self._dispatcher()
+        d.dispatch(t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [],
+                         "runner MUST NOT fire when gate_gap is set")
+        after = self._load(t.id)
+        self.assertEqual(after.status, "offen")
+        self.assertIn("Kein Autostart", after.body)
+        self.assertIn("Layout in der WebView", after.body)
+        self.assertIn("zieh dir dein Ticket", after.body)
+
+    def test_gate_gap_blocks_local_lane_with_reassign_hint(self):
+        """Local lanes (opencode/dsh) have no chat concept — the message
+        must not tell the user to open Claude Code there and wait.
+        Instead it names the reassign-to-claude step."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        t = store.create_ticket(
+            self.dir, title="Layout-Fix", description="",
+            assignee="opencode", project=str(self.dir),
+            gate="Tests laufen durch",
+            gate_gap="Bildschirm — die Prüfung sieht keine Farben")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+
+        oc_calls = []
+        def fake_work_ticket(t, cfg, on_progress=None, on_pid=None, owner=None):
+            oc_calls.append(t.id)
+            return SimpleNamespace(result="ok", status="review", changes={})
+
+        d = self._dispatcher()
+        with mock.patch.object(dispatch.opencode, "work_ticket",
+                               fake_work_ticket):
+            d.dispatch(t.id)
+            d.join(timeout=5)
+        self.assertEqual(oc_calls, [],
+                         "local runner MUST NOT fire when gate_gap is set")
+        after = self._load(t.id)
+        self.assertEqual(after.status, "offen")
+        self.assertIn("setze den Bearbeiter auf claude", after.body)
+        self.assertIn("Bildschirm", after.body)
+
+    def test_empty_gate_gap_leaves_dispatch_unchanged(self):
+        # Regression pin: no bounce when the field is empty (previous
+        # behaviour must survive the branch add).
+        t = store.create_ticket(self.dir, title="Normal", description="",
+                                project=str(self.dir), gate_gap="")
+        store.update_ticket(self.dir, t.id, {"status": "in_arbeit"})
+        d = self._dispatcher()
+        d.dispatch(t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [t.id])
+        self.assertEqual(self._load(t.id).status, "review")
+
+
+class Wb227AssortmentByBackendTest(unittest.TestCase):
+    """WB-227 (follow-up to WB-219 / WB-238): the SLOT a ticket runs in
+    is chosen by the BACKEND, not by the assignee name. A dsh ticket with
+    `backend: claude` starts the local Claude CLI and never touches the
+    GPU (measured: 37 s Claude vs 79 s Qwen on the same ticket) — it
+    must not serialise against opencode/dsh Qwen runs, and Qwen runs
+    must not wait behind it. Everything else keeps its historical slot,
+    including the "two local runs never at the same time" invariant."""
+
+    def test_dsh_with_claude_backend_lands_in_claude_slot(self):
+        # The whole point: dsh+claude → claude slot (per-project claude
+        # lane per WB-146). A Qwen run and a Claude-backend dsh run may
+        # then start in parallel.
+        self.assertEqual(dispatch.assortment("dsh", "claude"), "claude")
+
+    def test_dsh_with_local_backend_stays_in_local_slot(self):
+        # Explicit "local" is the wrapper's default. Same lane as
+        # opencode — one GPU, one run at a time.
+        self.assertEqual(dispatch.assortment("dsh", "local"),
+                         dispatch.LOCAL_SLOT)
+
+    def test_dsh_with_empty_backend_stays_in_local_slot(self):
+        # Backend unset means the wrapper's default, which is local.
+        # Explicit AND implicit must route the same way.
+        self.assertEqual(dispatch.assortment("dsh", ""),
+                         dispatch.LOCAL_SLOT)
+        self.assertEqual(dispatch.assortment("dsh"),
+                         dispatch.LOCAL_SLOT)
+
+    def test_opencode_ignores_backend_and_stays_in_local_slot(self):
+        # opencode-task knows nothing about backends and the store
+        # already refuses backend on non-dsh tickets — but assortment
+        # must not accidentally rely on that upstream check. If a
+        # rogue ticket somehow carried backend=claude on an opencode
+        # assignee, its slot must still be local (the runner is
+        # opencode-task, which needs the GPU).
+        self.assertEqual(dispatch.assortment("opencode", "claude"),
+                         dispatch.LOCAL_SLOT)
+
+    def test_claude_assignee_always_claude_slot(self):
+        # No surprises for the historical case: a claude ticket lands
+        # in claude regardless of what a bogus backend value might say.
+        self.assertEqual(dispatch.assortment("claude", ""), "claude")
+        self.assertEqual(dispatch.assortment("claude", "local"), "claude")
+        self.assertEqual(dispatch.assortment("claude", "claude"), "claude")
+
+    def test_two_local_runs_never_share_a_slot_is_still_the_rule(self):
+        # WB-227's "Fertig, wenn"-guard: the pre-existing invariant
+        # that dsh (default) and opencode share ONE slot must not
+        # regress. Same shape as the existing WB-219 test but pinned
+        # explicitly against the WB-227 change.
+        self.assertEqual(dispatch.assortment("dsh"),
+                         dispatch.assortment("opencode"))
+        self.assertEqual(dispatch.assortment("dsh", "local"),
+                         dispatch.assortment("opencode", ""))
+
+    def test_dispatcher_dispatch_uses_backend_when_choosing_the_lane(self):
+        """End-to-end: create a dsh ticket with backend=claude, dispatch
+        it, verify it lands in the claude slot's queue — not the local
+        one. Uses the pending/slot bookkeeping the Dispatcher exposes
+        via `_pending`."""
+        from stubs import temp_dir as _tmp, remove_tree as _rm
+        d = _tmp()
+        try:
+            t = store.create_ticket(d, title="dsh-claude", description="",
+                                    assignee="dsh", backend="claude",
+                                    gate="Tests laufen durch")
+            store.update_ticket(d, t.id, {"status": "in_arbeit"})
+            disp = make_dispatcher(self, d)
+            disp.dispatch(t.id)
+            with disp._lock:
+                claude_pending = set(disp._pending["claude"])
+                local_pending = set(disp._pending[dispatch.LOCAL_SLOT])
+            self.assertIn(t.id, claude_pending)
+            self.assertNotIn(t.id, local_pending)
+        finally:
+            _rm(d)
+
+
+class Wb238BackendFieldTest(unittest.TestCase):
+    """WB-238: per-ticket dsh backend choice. Store validates the value
+    AND that the assignee is dsh (opencode/claude reject it, not silently
+    ignore). The dsh runner sees `DSH_TASK_BACKEND=claude` in its env
+    when the field is set — the wrapper already reads that switch, this
+    is the plumbing between the ticket and the wrapper."""
+
+    def setUp(self):
+        self.dir = temp_dir()
+
+    def tearDown(self):
+        remove_tree(self.dir)
+
+    def test_backend_field_roundtrips(self):
+        t = store.create_ticket(self.dir, title="X", description="",
+                                assignee="dsh", backend="claude",
+                                gate="Tests laufen durch")
+        loaded = {x.id: x for x in store.load_tickets(self.dir)}[t.id]
+        self.assertEqual(loaded.backend, "claude")
+        # PATCH-write path accepts the same values.
+        store.update_ticket(self.dir, t.id, {"backend": ""})
+        self.assertEqual({x.id: x for x in
+                          store.load_tickets(self.dir)}[t.id].backend, "")
+        store.update_ticket(self.dir, t.id, {"backend": "local"})
+        self.assertEqual({x.id: x for x in
+                          store.load_tickets(self.dir)}[t.id].backend, "local")
+
+    def test_backend_rejects_bogus_value(self):
+        with self.assertRaises(ValueError) as cm:
+            store.create_ticket(self.dir, title="X", description="",
+                                assignee="dsh", backend="qwen")
+        self.assertIn("backend muss einer von", str(cm.exception))
+        t = store.create_ticket(self.dir, title="Y", description="",
+                                assignee="dsh")
+        with self.assertRaises(ValueError):
+            store.update_ticket(self.dir, t.id, {"backend": "unbekannt"})
+
+    def test_backend_rejects_on_non_dsh_assignee(self):
+        """The Umsetzungsskizze says: `assignee: opencode` (or claude)
+        ignores the field — a set `backend:` there must be rejected, not
+        silently dropped, or the user wonders why their choice does
+        nothing."""
+        with self.assertRaises(ValueError) as cm:
+            store.create_ticket(self.dir, title="X", description="",
+                                assignee="opencode", backend="claude",
+                                gate="Tests laufen durch")
+        self.assertIn("dsh", str(cm.exception))
+        with self.assertRaises(ValueError):
+            store.create_ticket(self.dir, title="Y", description="",
+                                assignee="claude", backend="claude")
+        # A dsh ticket that later gets its assignee changed to opencode
+        # while trying to keep backend=claude in the same PATCH: still
+        # rejected. The effective-assignee is what matters.
+        t = store.create_ticket(self.dir, title="Z", description="",
+                                assignee="dsh", gate="Tests laufen durch")
+        with self.assertRaises(ValueError):
+            store.update_ticket(self.dir, t.id,
+                                {"assignee": "opencode", "backend": "claude"})
+
+    def test_backend_empty_is_always_allowed(self):
+        # Sending backend="" is the "no-op / clear it" path — must never
+        # trip the "wrong assignee" check.
+        t = store.create_ticket(self.dir, title="X", description="",
+                                assignee="claude")
+        store.update_ticket(self.dir, t.id, {"backend": ""})  # no raise
+        self.assertEqual({x.id: x for x in
+                          store.load_tickets(self.dir)}[t.id].backend, "")
+
+    def test_dsh_run_env_carries_backend_claude(self):
+        """The actual plumbing: opencode._run_kwargs must set
+        DSH_TASK_BACKEND=claude in the run's environment when the ticket
+        says so. Same env dict that already carries WERKBANK_TICKET_ID."""
+        from werkbank import opencode
+
+        # Fake `run` with an `env` parameter so _run_kwargs decides to
+        # attach the env dict (signature-sniffed — see the docstring).
+        def fake_run(cmd, input=None, capture_output=True, text=True,
+                     timeout=None, cwd=None, env=None, on_pid=None):
+            fake_run.env = env
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        # dsh ticket with backend=claude → env carries DSH_TASK_BACKEND=claude.
+        t_claude = store.create_ticket(
+            self.dir, title="A", description="", assignee="dsh",
+            backend="claude", gate="Tests laufen durch",
+            project=str(self.dir))
+        opencode.run_task(t_claude, "aufgabe", run=fake_run)
+        self.assertEqual(fake_run.env.get("DSH_TASK_BACKEND"), "claude")
+
+        # dsh ticket without backend → the wrapper's default; no env var set.
+        t_local = store.create_ticket(
+            self.dir, title="B", description="", assignee="dsh",
+            gate="Tests laufen durch", project=str(self.dir))
+        opencode.run_task(t_local, "aufgabe", run=fake_run)
+        self.assertNotIn("DSH_TASK_BACKEND", fake_run.env)
+
+        # backend=local is the same "no override" state; wrapper default.
+        # (An empty string would also be fine, but local is the value a
+        # user picks from the dropdown, so pin it.)
+        store.update_ticket(self.dir, t_local.id, {"backend": "local"})
+        t_local2 = {x.id: x for x in
+                    store.load_tickets(self.dir)}[t_local.id]
+        opencode.run_task(t_local2, "aufgabe", run=fake_run)
+        self.assertEqual(fake_run.env.get("DSH_TASK_BACKEND"), "local")
+
+    def test_opencode_run_never_sets_dsh_backend_env(self):
+        """Belt-&-braces: even if a rogue ticket somehow slipped past
+        validation with backend=claude on an opencode assignee, the
+        env plumbing must not lie to the opencode wrapper about which
+        knob it should read."""
+        from werkbank import opencode
+
+        def fake_run(cmd, input=None, capture_output=True, text=True,
+                     timeout=None, cwd=None, env=None, on_pid=None):
+            fake_run.env = env
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        t = store.create_ticket(self.dir, title="X", description="",
+                                assignee="opencode",
+                                gate="Tests laufen durch",
+                                project=str(self.dir))
+        # Bypass the store's assignee check to simulate the paranoid case.
+        t.backend = "claude"
+        opencode.run_task(t, "aufgabe", run=fake_run)
+        self.assertNotIn("DSH_TASK_BACKEND", fake_run.env)
+
+
+class Wb238BackendBoardShapeTest(unittest.TestCase):
+    """WB-238: the backend row and the badge are in the shape the ticket
+    asks for — visible only when assignee=dsh, warns about the quota
+    cost, and card marks a claude-backend run so the ticket says WHO
+    ran (even though it looks like a local ticket)."""
+
+    def setUp(self):
+        self.board = (Path(__file__).resolve().parent.parent
+                      / "src/werkbank/board.html").read_text(encoding="utf-8")
+
+    def test_backend_select_in_both_dialogs(self):
+        self.assertEqual(self.board.count('name="backend"'), 2)
+        self.assertIn(".backend-row", self.board)
+
+    def test_syncBackendRow_hides_when_not_dsh_and_clears_value(self):
+        # The load-bearing hide-and-clear behaviour. If the row stayed
+        # visible for claude/opencode, the user could pick "claude" and
+        # then be surprised by the store rejection.
+        self.assertIn("function syncBackendRow", self.board)
+        self.assertRegex(self.board,
+            r'isDsh\s*=\s*\(form\.assignee\.value.*===.*"dsh"')
+        self.assertRegex(self.board,
+            r'if\s*\(\s*!\s*isDsh\s*\)\s*form\.backend\.value\s*=\s*""')
+
+    def test_quota_warning_present_in_dialog(self):
+        self.assertIn("verbraucht Abo-Kontingent", self.board)
+
+    def test_card_marks_claude_backend_run(self):
+        self.assertRegex(self.board,
+            r'\(t\.backend\s*\|\|\s*""\)\.toLowerCase\(\)\s*===\s*"claude"')
+        self.assertIn("🧠 claude-backend", self.board)
+
+    def test_detail_submit_ships_backend_only_when_changed(self):
+        # WB-251 shape for the new field.
+        self.assertRegex(self.board,
+            r'if\s*\(\s*backend\s*!==\s*\(detailTicket\.backend\s*\|\|\s*""\s*\)\s*\)'
+            r'\s*\n?\s*patch\.backend\s*=\s*backend')
+
+
+class Wb251DetailSaveSendsOnlyDiffsTest(unittest.TestCase):
+    """WB-251: reporter clicked Save in the detail dialog and got an
+    "Unbekannter/Unbekannte Felder" toast for tickets whose gate_gap
+    field was empty and unchanged. Cause: the client always shipped
+    `gate_gap` (and `interactive` before it), and any running server
+    that predated the field crashed on it — the "cannot save the
+    description" symptom on the day each field landed. Fix: send those
+    fields only when they differ from the loaded ticket. Two guards:
+    a store-level reproduction of the raw collision (what the old
+    server did to the request), and a board-shape pin that the diff
+    check is in the submit handler."""
+
+    def setUp(self):
+        self.dir = temp_dir()
+        self.t = store.create_ticket(self.dir, title="X", description="Y")
+
+    def tearDown(self):
+        remove_tree(self.dir)
+
+    def test_store_rejects_unknown_gate_gap_on_an_older_server_shape(self):
+        """Reproduces the exact 400 the reporter saw: simulate a store from
+        BEFORE WB-226 by patching the allowed set at test time; a PATCH
+        that carries `gate_gap` (even empty) fires the WB-178 message —
+        which is what the user then reports as an "unknown error" on
+        the day the field lands."""
+        from unittest import mock
+        real_update = store._update_locked
+        def old_update(tickets_dir, ticket_id, changes, expected_version=None):
+            allowed = {"title", "type", "status", "assignee", "project",
+                       "priority", "nach", "nicht_mit", "fork", "gate",
+                       "review", "session", "handover", "handover_at",
+                       "handover_expired", "limit_until", "pid", "answer",
+                       "tokens_in", "tokens_out", "tokens_cache", "cost_usd",
+                       "duration_s", "queue_pos", "epic", "interactive",
+                       "review_cost_usd", "orphaned", "claimed_at", "body"}
+            unknown = set(changes) - allowed
+            if unknown:
+                raise ValueError(f"Unbekannte Felder: {', '.join(sorted(unknown))}. "
+                                 "Meist heißt das, das laufende Board ist älter "
+                                 "als das Ticket-Formular — starte das Board neu.")
+            return real_update(tickets_dir, ticket_id, changes, expected_version)
+        with mock.patch.object(store, "_update_locked", side_effect=old_update):
+            with self.assertRaises(ValueError) as cm:
+                store.update_ticket(self.dir, self.t.id,
+                                    {"gate_gap": "", "body": "..."})
+            self.assertIn("Unbekannte Felder", str(cm.exception))
+            self.assertIn("gate_gap", str(cm.exception))
+
+    def test_board_detail_submit_only_sends_gate_gap_when_changed(self):
+        board = (Path(__file__).resolve().parent.parent
+                 / "src/werkbank/board.html").read_text(encoding="utf-8")
+        # The diff-guard for gate_gap in the detail submit.
+        self.assertRegex(board,
+            r'if\s*\(\s*gap\s*!==\s*\(detailTicket\.gate_gap\s*\|\|\s*""\s*\)\s*\)'
+            r'\s*\n?\s*patch\.gate_gap\s*=\s*gap')
+        # Same guard for interactive — the earlier version of the same bug.
+        self.assertRegex(board,
+            r'if\s*\(\s*interactive\s*!==\s*'
+            r'\(detailTicket\.interactive\s*\|\|\s*"nein"\s*\)\s*\)\s*\n?'
+            r'\s*patch\.interactive\s*=\s*interactive')
+
+    def test_board_detail_submit_no_longer_ships_gate_gap_unconditionally(self):
+        # A safety net for the same class of regression: the old unconditional
+        # `gate_gap: form.gate_gap.value,` in the PATCH object was exactly what
+        # made the reporter's save crash. If this pattern comes back, the
+        # test fires.
+        board = (Path(__file__).resolve().parent.parent
+                 / "src/werkbank/board.html").read_text(encoding="utf-8")
+        self.assertNotRegex(board,
+            r'gate_gap:\s*form\.gate_gap\.value\s*,')
+
+
+class Wb226GateGapBoardShapeTest(unittest.TestCase):
+    """WB-226: the board pieces the user actually sees — a rename or removal
+    here must consciously touch this test."""
+
+    def setUp(self):
+        self.board = (Path(__file__).resolve().parent.parent
+                      / "src/werkbank/board.html").read_text(encoding="utf-8")
+
+    def test_field_appears_in_both_dialogs(self):
+        self.assertEqual(self.board.count('name="gate_gap"'), 2,
+                         "gate_gap input must be in create AND detail dialogs")
+
+    def test_card_renders_the_gap_badge_and_note(self):
+        self.assertIn(".gate-gap-badge", self.board)
+        self.assertIn(".gate-gap-note", self.board)
+        self.assertIn("Prüfung deckt nicht ab", self.board)
+        # The gap text lands in the card body via textContent (no HTML).
+        self.assertIn('line.textContent = "Kein Autostart', self.board)
+
+
 class Wb168InteractiveOptInTest(unittest.TestCase):
     """WB-168: a ticket with `interactive: ja` takes the same chat-only
     dispatch path as an epic — with a live chat session it goes to WB-22
@@ -3072,6 +3745,7 @@ class Wb168InteractiveOptInTest(unittest.TestCase):
         self.assertIn("zieh dir dein Ticket", after.body)
 
     def test_interactive_ticket_with_chat_session_uses_wb22_handover(self):
+        force_marker_handover(self)
         t = self._make(interactive="ja")
         dispatch.register_ticket_session(str(self.dir), "chat-int", self.state)
         d = self._dispatcher()
@@ -4025,3 +4699,205 @@ class Wb184ZombieCountsAsDeadEverywhereTest(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait(timeout=5)
+
+
+class Wb258DirectHandoverDeliveryTest(unittest.TestCase):
+    """WB-258: at handover time the dispatcher tries to poke the chat session
+    directly via its messaging socket. A dead / missing session short-circuits
+    the 5-minute chat_handover_minutes wait — the board goes straight to a
+    background run. Any other outcome (delivered, wrong protocol, error) still
+    writes the marker + arms the fallback (audit trail + safety net)."""
+
+    def setUp(self):
+        self.dir = temp_dir()
+        self.state = self.dir / "state.json"
+        dispatch.register_ticket_session(str(self.dir), "chat-258", self.state)
+        self.t = store.create_ticket(self.dir, title="Uebergabe direkt",
+                                     description="")
+        store.update_ticket(self.dir, self.t.id, {"status": "in_arbeit"})
+        self.calls = []
+
+    def tearDown(self):
+        remove_tree(self.dir)
+
+    def _dispatcher(self):
+        def runner(t, on_start=None):
+            self.calls.append(t.id)
+            return "hintergrund", "sess-bg"
+        return make_dispatcher(self,
+            self.dir, cfg={"state_path": str(self.state),
+                           "default_project": str(self.dir),
+                           "chat_handover_minutes": 10},
+            runner=runner)
+
+    def _load(self):
+        return {x.id: x for x in store.load_tickets(self.dir)}[self.t.id]
+
+    def _patch_delivery(self, result):
+        from unittest import mock
+        patcher = mock.patch.object(dispatch.messaging, "deliver",
+                                    return_value=result)
+        m = patcher.start()
+        self.addCleanup(patcher.stop)
+        return m
+
+    def test_delivered_writes_marker_and_skips_background(self):
+        self._patch_delivery(dispatch.messaging.DeliveryResult.DELIVERED)
+        d = self._dispatcher()
+        d.dispatch(self.t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [], "background runner must not fire")
+        after = self._load()
+        self.assertEqual(after.handover, "chat-258")
+        self.assertEqual(after.status, "in_arbeit")
+
+    def test_dead_socket_skips_marker_and_runs_background_now(self):
+        self._patch_delivery(dispatch.messaging.DeliveryResult.DEAD_SOCKET)
+        d = self._dispatcher()
+        d.dispatch(self.t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [self.t.id],
+                         "dead session must not wait — background runs at once")
+        after = self._load()
+        self.assertEqual(after.handover, "", "no marker for a dead chat")
+
+    def test_no_session_file_skips_marker_and_runs_background_now(self):
+        self._patch_delivery(dispatch.messaging.DeliveryResult.NO_SESSION_FILE)
+        d = self._dispatcher()
+        d.dispatch(self.t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [self.t.id])
+        after = self._load()
+        self.assertEqual(after.handover, "")
+
+    def test_wrong_protocol_falls_back_to_marker_path(self):
+        self._patch_delivery(dispatch.messaging.DeliveryResult.WRONG_PROTOCOL)
+        d = self._dispatcher()
+        d.dispatch(self.t.id)
+        d.join(timeout=5)
+        self.assertEqual(self.calls, [])
+        after = self._load()
+        self.assertEqual(after.handover, "chat-258")
+
+    def test_delivery_attempt_is_logged(self):
+        self._patch_delivery(dispatch.messaging.DeliveryResult.DEAD_SOCKET)
+        d = self._dispatcher()
+        d.dispatch(self.t.id)
+        d.join(timeout=5)
+        log = self.state.parent / "handovers.jsonl"
+        self.assertTrue(log.exists(), "handovers.jsonl must be written")
+        entries = [json.loads(line) for line in
+                   log.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["ticket"], self.t.id)
+        self.assertEqual(entries[0]["session"], "chat-258")
+        self.assertEqual(entries[0]["result"], "dead_socket")
+        self.assertEqual(entries[0]["action"], "background")
+
+
+class Wb258MessagingModuleTest(unittest.TestCase):
+    """WB-258: the messaging module reads the user's .claude/sessions directory*.json to find
+    the socket, gates on peerProtocol == 1, and reports every failure as a
+    value instead of raising."""
+
+    def setUp(self):
+        from werkbank import messaging
+        self.messaging = messaging
+        self.sessions = temp_dir()
+
+    def tearDown(self):
+        remove_tree(self.sessions)
+
+    def _write_session(self, name, session_id, socket_path, protocol=1):
+        (self.sessions / f"{name}.json").write_text(json.dumps({
+            "pid": 4242, "sessionId": session_id,
+            "messagingSocketPath": str(socket_path),
+            "peerProtocol": protocol,
+        }), encoding="utf-8")
+
+    def test_find_session_matches_by_id(self):
+        self._write_session("3.json", "sid-A", "/tmp/does-not-matter.sock")
+        found = self.messaging.find_session("sid-A", self.sessions)
+        self.assertEqual(found, ("/tmp/does-not-matter.sock", 1))
+
+    def test_find_session_returns_none_when_no_match(self):
+        self._write_session("3.json", "sid-A", "/tmp/x.sock")
+        self.assertIsNone(self.messaging.find_session("sid-Z", self.sessions))
+
+    def test_find_session_ignores_malformed_files(self):
+        (self.sessions / "bad.json").write_text("not json", encoding="utf-8")
+        self._write_session("3.json", "sid-A", "/tmp/x.sock")
+        self.assertEqual(self.messaging.find_session("sid-A", self.sessions),
+                         ("/tmp/x.sock", 1))
+
+    def test_deliver_no_session_file(self):
+        self.assertEqual(
+            self.messaging.deliver("nobody", "hi", sessions_dir=self.sessions),
+            self.messaging.DeliveryResult.NO_SESSION_FILE)
+
+    def test_deliver_wrong_protocol(self):
+        self._write_session("3.json", "sid-A", "/tmp/x.sock", protocol=2)
+        self.assertEqual(
+            self.messaging.deliver("sid-A", "hi", sessions_dir=self.sessions),
+            self.messaging.DeliveryResult.WRONG_PROTOCOL)
+
+    def test_deliver_dead_socket(self):
+        # A path that does not exist as a socket → connect fails with
+        # FileNotFoundError, which the module treats as DEAD_SOCKET.
+        sock_path = self.sessions / "not-a-socket.sock"
+        self._write_session("3.json", "sid-A", sock_path)
+        self.assertEqual(
+            self.messaging.deliver("sid-A", "hi", sessions_dir=self.sessions),
+            self.messaging.DeliveryResult.DEAD_SOCKET)
+
+    @posix_only
+    def test_deliver_writes_json_line_to_a_live_socket(self):
+        import socket as _s
+        sock_path = str(self.sessions / "live.sock")
+        server = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
+        server.bind(sock_path)
+        server.listen(1)
+        self.addCleanup(server.close)
+        self._write_session("3.json", "sid-A", sock_path)
+
+        received = []
+
+        def accept():
+            conn, _ = server.accept()
+            with conn:
+                received.append(conn.recv(64 * 1024))
+
+        thread = threading.Thread(target=accept, daemon=True)
+        thread.start()
+        result = self.messaging.deliver("sid-A", "hallo",
+                                        sessions_dir=self.sessions)
+        thread.join(timeout=2)
+        self.assertEqual(result, self.messaging.DeliveryResult.DELIVERED)
+        self.assertTrue(received, "server never received bytes")
+        payload = json.loads(received[0].decode("utf-8").rstrip("\n"))
+        self.assertEqual(payload["msgV"], 1)
+        self.assertEqual(payload["type"], "user")
+        self.assertEqual(payload["priority"], "next")
+        self.assertEqual(payload["from"], "werkbank")
+        self.assertIn("cross-session-message", payload["message"]["content"])
+        self.assertIn("hallo", payload["message"]["content"])
+
+
+class Wb252DefaultAssigneeIsClaudeTest(unittest.TestCase):
+    """WB-252: the create-dialog default is claude, regardless of whether the
+    project has a gate configured. Reverses WB-228's gate-aware dsh default —
+    the owner's call on 2026-08-20 („claude ist der goto Agent")."""
+
+    def setUp(self):
+        self.board = (Path(__file__).resolve().parent.parent
+                      / "src/werkbank/board.html").read_text(encoding="utf-8")
+
+    def test_defaultAssignee_returns_claude_unconditionally(self):
+        # The function body must not branch on gateNames anymore — a return
+        # of "claude" full stop pins the current owner decision.
+        self.assertRegex(self.board,
+            r'function\s+defaultAssignee\s*\(\s*project\s*\)\s*\{\s*'
+            r'return\s+"claude"\s*;\s*\}')
+        # Belt and suspenders: no residual dsh branch in the function.
+        self.assertNotRegex(self.board,
+            r'function\s+defaultAssignee[\s\S]{0,200}gateNames\s*\(')

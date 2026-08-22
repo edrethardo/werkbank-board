@@ -1,6 +1,6 @@
 """WB-229: a board with no browser tab open must still dispatch.
 
-Found in a headless night run by the coding_agent session, confirmed here on
+Found in a headless night run by a peer session, confirmed here on
 the running service: the Dispatcher was built LAZILY, and `main()` only
 reached `get_dispatcher()` when a handover marker happened to survive the
 restart. Otherwise the first call came from an AUTHENTICATED request handler —
@@ -77,6 +77,68 @@ class BootBuildsTheDispatcherTest(unittest.TestCase):
         server.TICKETS_DIR = self.dir
         server.CONFIG = self._saved[1]
         server.DISPATCHER = None
+
+
+class WindowsHandoverTest(unittest.TestCase):
+    """WB-263 round 2: the Windows path had no test at all.
+
+    `messaging.deliver()` returns NO_SOCKET_SUPPORT where there is no AF_UNIX,
+    and the dispatcher must treat it like "nobody is there" — straight to a
+    background run. Deleting that one entry from the tuple left all 642 tests
+    green, which a reviewer demonstrated; on Windows it would mean every
+    handover waits five minutes for a claim that cannot arrive.
+    """
+
+    def test_the_result_exists_and_is_distinct(self):
+        from werkbank import messaging
+        self.assertNotEqual(messaging.DeliveryResult.NO_SOCKET_SUPPORT,
+                            messaging.DeliveryResult.ERROR)
+
+    def test_deliver_returns_it_when_the_platform_has_no_unix_socket(self):
+        import socket as real_socket
+        from werkbank import messaging
+
+        class NoUnixSocket:
+            """Everything the module uses, minus AF_UNIX."""
+            SOCK_STREAM = real_socket.SOCK_STREAM
+
+        saved = messaging._socket
+        try:
+            messaging._socket = NoUnixSocket()
+            out = messaging.deliver("irgendeine-id", "text",
+                                    sessions_dir=self._sessions_dir())
+            self.assertEqual(out, messaging.DeliveryResult.NO_SOCKET_SUPPORT)
+        finally:
+            messaging._socket = saved
+
+    def _sessions_dir(self):
+        """A directory with one session file pointing at a socket path, so
+        `find_session` succeeds and the AF_UNIX check is what decides."""
+        import json
+        d = temp_dir()
+        self.addCleanup(remove_tree, d)
+        (d / "s.json").write_text(json.dumps({
+            "sessionId": "irgendeine-id",
+            "messagingSocketPath": str(d / "sock"),
+            "peerProtocol": messaging_protocol()}), encoding="utf-8")
+        return d
+
+    def test_the_dispatcher_treats_it_as_nobody_there(self):
+        """Pinned as source, because building a full dispatch here would test
+        the harness rather than the branch: the tuple that skips the marker
+        path must contain all three 'no chat reachable' outcomes."""
+        src = (Path(__file__).resolve().parent.parent
+               / "src" / "werkbank" / "dispatch.py").read_text(encoding="utf-8")
+        start = src.index("if delivery in (messaging.DeliveryResult.NO_SESSION_FILE")
+        block = src[start:start + 400]
+        for name in ("NO_SESSION_FILE", "DEAD_SOCKET", "NO_SOCKET_SUPPORT"):
+            self.assertIn(name, block,
+                          f"{name} no longer skips the pointless five-minute wait")
+
+
+def messaging_protocol():
+    from werkbank import messaging
+    return messaging.SUPPORTED_PROTOCOL
 
 
 class LockRetryTest(unittest.TestCase):

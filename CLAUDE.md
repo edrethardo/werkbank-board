@@ -23,12 +23,15 @@ onboarding dialog in plain German, one step at a time:
    be added at the board: its own session registers itself when the user says
    „registriere dieses Projekt bei der Werkbank“ (`werkbank-register-project`
    skill; the board picks the new project up without a restart).
-4. **Offer the skill install.** For each of `werkbank-pull-ticket` and
-   `werkbank-register-project`: if `~/.claude/skills/<name>/` does not exist,
+4. **Offer the skill install.** For each of `werkbank-pull-ticket`,
+   `werkbank-register-session`, `werkbank-register-project`,
+   `werkbank-report-bug` and `werkbank-upload-files` — the first two are the
+   ones a project needs to take part at all, the rest are optional and can be
+   offered in one sentence: if `~/.claude/skills/<name>/` does not exist,
    offer to install it by copying `.claude/skills/_user-level/<name>/` there.
    Install only after the user says yes; if it is already installed, say so and
-   skip. Both carry the Werkbank's absolute path in SEVERAL places (five in
-   `werkbank-pull-ticket`) — adapt EVERY occurrence in the installed copy,
+   skip. They carry the Werkbank's absolute path in SEVERAL places — adapt
+   EVERY occurrence in the installed copy (do not trust a remembered count),
    then grep the installed file for the placeholder to be sure none is left.
    Adapting only the first line installs a skill whose later commands point
    nowhere (found by an adversarial review, 2026-08-18).
@@ -88,7 +91,8 @@ Record the choice and its why in `docs/dev/stack.md` when `src/` gets its first 
 - `docs/TAGS.md` — the only allowed tags for docs/journal frontmatter
 - `CHANGELOG.md` — user-facing changes (their language)
 - `.claude/skills/` — this tool's skills, project-local (includes the developer-agent
-  kit skills; updates arrive via the `syncing-the-kit` skill and `.developer-agent.json`).
+  kit skills, kept in step by the owner; the sync mechanism itself is part of
+  the developer-agent kit and is not shipped with this board).
   `_user-level/` is Werkbank's OWN delivery area for skills that target projects
   install (`werkbank-pull-ticket`, `werkbank-register-project`, …) — not part
   of the kit.

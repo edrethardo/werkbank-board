@@ -1,6 +1,6 @@
 ---
 name: work-tickets
-description: Use when the user asks to work the tickets ("arbeite die Tickets ab", "erledige Ticket WB-3", "was steht an?"), and when a handover marker wakes the watcher — dispatch or visibly work tickets and report results.
+description: Use when the user asks to work the tickets ("arbeite die Tickets ab", "erledige Ticket WB-3", "was steht an?"), and when the board hands a ticket to this chat — dispatch or visibly work tickets and report results.
 version: 7
 ---
 
@@ -8,8 +8,8 @@ version: 7
 > automatically (see `src/werkbank/dispatch.py`): normally a claude run resuming
 > the remembered ticket session (forked per checkbox/safety rules; bug tickets get
 > the debugging-discipline block injected). If the remembered lineage is a LIVE
-> chat session, the ticket is HANDED OVER to it instead (WB-22, see watcher
-> below). The flow below is the CHAT path; every path must end in `review` with an
+> chat session, the ticket is HANDED OVER to it — delivered straight into
+> that conversation since WB-258; see the last section. The flow below is the CHAT path; every path must end in `review` with an
 > honest `## Ergebnis`.
 
 # Work Tickets
@@ -18,7 +18,7 @@ Tickets are markdown files in `tickets/` (format: see `src/werkbank/store.py` �
 frontmatter, body has `## Beschreibung` and `## Ergebnis`). The files are the source
 of truth; edit them with file tools. Statuses: `offen → in_arbeit → review →
 erledigt`. Agents NEVER set `erledigt` — that column belongs to the user.
-Tickets have a `type`: `aufgabe` (default) or `bug`; older files without the
+Tickets have a `type`: `aufgabe` (default), `bug` or `epic` (WB-161); older files without the
 field count as `aufgabe`.
 
 ## "Was steht an?"
@@ -52,42 +52,23 @@ For each targeted ticket with status `offen`, ordered `hoch` > `normal` > `niedr
 Working a ticket YOURSELF in this chat (chat request, handover arrivals):
 follow `werkbank-work-ticket` — the same workflow, without spawning.
 
-## Handover watcher — START IT WHEN YOU CLAIM, NOT WHEN YOU FINISH
+## Handovers arrive by themselves — no watcher
 
-**Only in an INTERACTIVE chat session. A dispatched background run must never
-start it** — and must leave no background job of any kind behind. Measured
-2026-08-16 (WB-77): a background run resumed a chat session's transcript,
-copied this rule, and left the watcher looping. The run had already delivered
-its result, but the watcher inherited its output pipe, so the board could not
-tell it was finished: 19 minutes of "in Arbeit", the whole queue stalled behind
-it, and at the 30-minute watchdog the SUCCESSFUL run would have been recorded
-as failed. Waiting for a handover is meaningless in a run that IS the handover.
+Since WB-258 the board delivers a dragged ticket straight into the registered
+chat session over its messaging socket. There is nothing to poll.
 
-**Rule (learned the hard way, three times):** the FIRST action after claiming a
-ticket is restarting the watcher. Doing it "at the end" fails every time
-something interrupts the end — the next handover then sits unnoticed until the
-board's fallback picks it up minutes later, and the user has to ask why nothing
-is happening.
+**Do not start a watcher loop.** The old one cost this project twice: a
+background run copied it out of a resumed transcript and left it holding the
+run's output pipe (19 minutes of a stalled queue behind a run that had already
+finished, WB-77), and a later version looked started while it had already
+exited, because its deadline came from a per-shell counter that was still zero
+(WB-259). Both disappear with the loop.
 
-Start it (Bash, run_in_background) — immediately after the claim:
-
-    end=$((SECONDS+7200)); while [ $SECONDS -lt $end ]; do
-      f=$(grep -l "^handover: $CLAUDE_CODE_SESSION_ID" tickets/*.md 2>/dev/null | head -1)
-      [ -n "$f" ] && { echo "HANDOVER:$f"; exit 0; }; sleep 5
-    done; echo TIMEOUT; exit 1
-
-When it exits with HANDOVER:<file> (the harness wakes you):
-
-1. **Claim** — `{"handover": "", "handover_at": "", "session": "$CLAUDE_CODE_SESSION_ID"}`.
-   The deadline is `chat_handover_minutes` (default 5) counted from the marker's
-   own timestamp, so it survives board restarts (WB-66); afterwards a forked
-   background run takes over.
-2. **Restart the watcher right away** (see the rule above).
-3. Tell the user the ticket arrived, work it VISIBLY here, finalize (review),
-   re-register.
-
-On TIMEOUT just start it again. A dead watcher is not data loss — handovers
-fall back to background runs — but it makes the board look stuck.
+What makes a chat reachable is the REGISTRATION: `state.json` must hold this
+session's id with `"interactive": true` for the ticket's project. The
+`werkbank-register-session` skill does that deliberately; finishing a ticket
+does it as a side effect. If a handover does not arrive, check that — do not
+reintroduce a poller.
 
 ## Traps this project has actually hit
 
@@ -114,7 +95,8 @@ fall back to background runs — but it makes the board look stuck.
       sid="$CLAUDE_CODE_SESSION_ID"
       [ -n "$sid" ] && python3 -c "import os, sys; sys.path.insert(0, 'src'); from werkbank import dispatch; dispatch.register_ticket_session('<ticket project path>', '$sid')"
 
-- Then start (or restart) the handover watcher above.
+- Nothing else to start: the board delivers the next handover into this
+  conversation by itself (WB-258).
 - If the project worked on was THIS repo: normal git discipline applies (commit the
   ticket-file changes together with the work).
 - Otherwise: commit the ticket-file changes here with subject

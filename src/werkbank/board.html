@@ -172,6 +172,16 @@
   .interactive-badge { border: 1px solid var(--accent); color: var(--accent);
                        border-radius: 3px; padding: .05rem .3rem; font-size: .68rem;
                        font-weight: 600; }
+  /* WB-226: a gap in what the gate proves — no autostart, human-eye needed.
+     Yellow because the card is not broken but held; the text under the card
+     names the missing coverage so a glance at the board explains itself. */
+  .gate-gap-badge { background: var(--hoch); color: #fff; border-radius: 3px;
+                    padding: .05rem .35rem; font-size: .68rem; font-weight: 700;
+                    letter-spacing: .02em; cursor: help; }
+  .gate-gap-note { margin-top: .55rem; padding-top: .5rem;
+                   border-top: 1px dashed var(--hoch);
+                   font-size: .78rem; color: var(--hoch); }
+  .card.gate-gap { border-left: 3px solid var(--hoch); }
   /* WB-175: the router hint lives right under the assignee selector; muted
      so it does not shout over the actual selectors. Empty by default. */
   .router-hint { font-size: .75rem; color: var(--muted); margin-top: .25rem;
@@ -306,6 +316,29 @@
         Rechner. Was es selbst über seine Arbeit sagt, zählt nicht — nur diese
         Prüfung.</p>
     </div>
+    <!-- WB-238: dsh backend per ticket. Only shown when assignee=dsh (the
+         opencode wrapper knows nothing about backends). "" and "local" mean
+         the wrapper's default (lokales Qwen), "claude" routes through the
+         local Claude CLI and burns subscription quota. -->
+    <div class="backend-row" hidden>
+      <label>Backend (nur bei dsh)</label>
+      <select name="backend">
+        <option value="">lokal (Standard) — GPU auf diesem Rechner</option>
+        <option value="claude">claude (Claude-CLI, verbraucht Abo-Kontingent)</option>
+      </select>
+      <p class="gate-hint">„claude" belastet dein Claude-Abo genauso wie ein
+        normales claude-Ticket. Nur wählen, wenn ein Qwen-Lauf schon einmal
+        gescheitert ist oder du bewusst die Zeit-Ersparnis suchst.</p>
+    </div>
+    <!-- WB-226: what the check does NOT cover for THIS ticket. Non-empty
+         → no autostart; goes to chat where a human can look. -->
+    <label>Prüfung deckt NICHT ab (Autostart wird dann unterbunden)</label>
+    <input name="gate_gap" autocomplete="off"
+           placeholder="z. B. „Layout in der WebView, sieht die Prüfung nicht"">
+    <p class="gate-hint">Leer lassen, wenn die Prüfung die Akzeptanz wirklich
+      beweist. Wo Kriterien am Bildschirm hängen (Oberfläche, Animation,
+      Layout), ist ein grünes Gate keine Abnahme — beschreibe hier kurz, was
+      fehlt, und das Ticket geht dann NUR an eine Chat-Session zum Ansehen.</p>
 
     <div class="row">
       <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
@@ -363,6 +396,25 @@
         Rechner. Was es selbst über seine Arbeit sagt, zählt nicht — nur diese
         Prüfung.</p>
     </div>
+    <!-- WB-238 (Detail): same backend selector as the create dialog. -->
+    <div class="backend-row" hidden>
+      <label>Backend (nur bei dsh)</label>
+      <select name="backend">
+        <option value="">lokal (Standard) — GPU auf diesem Rechner</option>
+        <option value="claude">claude (Claude-CLI, verbraucht Abo-Kontingent)</option>
+      </select>
+      <p class="gate-hint">„claude" belastet dein Claude-Abo genauso wie ein
+        normales claude-Ticket. Nur wählen, wenn ein Qwen-Lauf schon einmal
+        gescheitert ist oder du bewusst die Zeit-Ersparnis suchst.</p>
+    </div>
+    <!-- WB-226 (Detail): same field as the create dialog. Setting or
+         clearing this is the way to switch autostart on and off. -->
+    <label>Prüfung deckt NICHT ab (Autostart wird dann unterbunden)</label>
+    <input name="gate_gap" autocomplete="off"
+           placeholder="z. B. „Layout in der WebView, sieht die Prüfung nicht"">
+    <p class="gate-hint">Leer lassen, wenn die Prüfung die Akzeptanz wirklich
+      beweist. Sobald hier etwas steht, wird der Autostart unterbunden — das
+      Ticket geht nur an eine Chat-Session zum Ansehen.</p>
 
     <div class="row">
       <div><label>Muss warten auf (z.&nbsp;B. WB-8, WB-9)</label>
@@ -454,10 +506,58 @@
 <div id="error"></div>
 
 <script>
+// WB-253: its OWN block, and BEFORE the main one, on purpose. A script that
+// fails to PARSE takes its whole block with it — a reporter living inside
+// that block never registers, and the page simply goes white. From here it
+// still catches the parse error of the block below, which is exactly what
+// happened: `??` (WB-203) is a syntax error on an older phone browser, so
+// nothing in the main block ever ran.
+// WB-252: a script error used to leave a BLANK PAGE. On a phone that is the
+// end of the road — no console, no way to tell "broken" from "still loading",
+// and the owner can only report "it is broken". Measured 2026-08-19: a blank
+// board on the phone while the desktop tab, still holding an older cached
+// page, kept working — so the failure was invisible on the one machine that
+// could have diagnosed it. Anything that throws now says so ON the page.
+(function () {
+  let shown = false;
+  function show(what, where) {
+    if (shown) return;            // one box, not one per repeated error
+    shown = true;
+    try {
+      const box = document.createElement("div");
+      box.setAttribute("style",
+        "position:fixed;left:0;right:0;top:0;z-index:99999;padding:14px 16px;"
+        + "background:#7f1d1d;color:#fff;font:14px/1.45 system-ui,sans-serif;"
+        + "white-space:pre-wrap;word-break:break-word;box-shadow:0 2px 12px #0008");
+      const head = document.createElement("b");
+      head.textContent = "Das Board konnte die Seite nicht aufbauen.";
+      const body = document.createElement("div");
+      body.style.marginTop = "6px";
+      body.textContent = String(what || "Unbekannter Fehler")
+        + (where ? "\n" + where : "")
+        + "\n\nZeig diese Meldung dem Assistenten — sie sagt ihm genau, "
+        + "welche Zeile schuld ist. Neu laden hilft meist nicht.";
+      box.append(head, body);
+      (document.body || document.documentElement).prepend(box);
+    } catch (_) { /* never let the reporter break the report */ }
+  }
+  window.addEventListener("error", e => {
+    show(e.message, e.filename ? e.filename.split("/").pop() + ":" + e.lineno
+                                 + ":" + e.colno : "");
+  });
+  window.addEventListener("unhandledrejection", e => {
+    const r = e.reason;
+    show(r && r.message ? r.message : r, "(unbehandelte Zusage)");
+  });
+})();
+</script>
+
+<script>
 // WB-123: rueckfrage sits between in_arbeit and review — the agent has
 // paused with a question and needs the user to reply. The card carries an
 // inline answer form (desktop and phone) and the whole board colour-codes
 // it so an unanswered question is impossible to overlook.
+
 const COLUMNS = [
   ["offen", "Offen"], ["zu_bearbeiten", "Zu bearbeiten"],
   ["in_arbeit", "In Arbeit"], ["rueckfrage", "Rückfrage"],
@@ -738,7 +838,11 @@ function renderPhone(visible) {
   board.innerHTML = "";
   const col = document.createElement("div");
   col.className = "col"; col.dataset.status = phoneStatus;
-  const cards = visible.filter(t => t.status === phoneStatus);
+  // WB-253: the phone was left out of WB-203's queue ordering, so "Zu
+  // bearbeiten" still showed ticket-number order there — the same lie the
+  // desktop had, on the device the owner actually carries around.
+  const cards = queueOrder(visible.filter(t => t.status === phoneStatus),
+                           phoneStatus);
   if (!cards.length) {
     const hint = document.createElement("div");
     hint.className = "empty-hint";
@@ -791,10 +895,19 @@ function effectiveQueuePos(t) {
   return t.queue_pos !== "" && Number.isFinite(n) ? n : ticketNumber(t.id);
 }
 
+// WB-253: written the long way ON PURPOSE. The `??` this replaced needs iOS
+// Safari 13.4; on anything older the WHOLE script block fails to PARSE, so
+// nothing runs and the board is a blank page — which is exactly how this bug
+// reached the owner's phone, one day after WB-203 introduced the operator.
+function prioRank(priority) {
+  const rank = PRIORITY_ORDER[priority];
+  return rank === undefined ? 1 : rank;
+}
+
 function queueOrder(cards, status) {
   if (status !== "zu_bearbeiten") return cards;
   return cards.slice().sort((a, b) =>
-    (PRIORITY_ORDER[a.priority] ?? 1) - (PRIORITY_ORDER[b.priority] ?? 1)
+    (prioRank(a.priority) - prioRank(b.priority))
     || effectiveQueuePos(a) - effectiveQueuePos(b)
     || ticketNumber(a.id) - ticketNumber(b.id));
 }
@@ -1079,6 +1192,70 @@ function cardEl(t) {
     const badge = document.createElement("span");
     badge.className = "bug-badge"; badge.textContent = "BUG"; badge.title = "Bug-Ticket";
     el.querySelector(".id").after(badge);
+  }
+  // WB-238: dsh ticket routed through the local Claude CLI — sichtbar
+  // machen, weil das Abo-Kontingent verbraucht wird, obwohl der Bearbeiter
+  // wie ein lokaler aussieht. Kein Badge für "" / "local" (der Default).
+  if ((t.backend || "").toLowerCase() === "claude") {
+    const badge = document.createElement("span");
+    badge.className = "link-badge";
+    badge.textContent = "🧠 claude-backend";
+    badge.title = "dsh-Ticket läuft über den Claude-CLI (backend: claude) — "
+      + "verbraucht Abo-Kontingent wie ein normales claude-Ticket.";
+    el.querySelector(".id").after(badge);
+  }
+  // WB-226: ticket names a gap in what the gate covers. The badge sits
+  // next to the id (so it is visible in any column); the text itself
+  // appears in the card body so the user sees WHY there is no autostart
+  // without opening the detail dialog.
+  if (t.gate_gap) {
+    const badge = document.createElement("span");
+    badge.className = "gate-gap-badge";
+    badge.textContent = "⚠ Prüfung deckt nicht ab";
+    badge.title = t.gate_gap;
+    el.querySelector(".id").after(badge);
+    const line = document.createElement("div");
+    line.className = "gate-gap-note";
+    line.textContent = "Kein Autostart — Prüfung deckt nicht ab: " + t.gate_gap;
+    el.appendChild(line);
+    el.classList.add("gate-gap");
+  }
+  // WB-230: verwaister lebender Lauf — Prozess läuft weiter, aber der
+  // Besitzer-Dispatcher ist weg. `orphaned=ja` wurde vom Ticker (oder
+  // beim Startup-Sweep) gesetzt. Zeigt Badge + Warnzeile + „Beenden“;
+  // adoptiert wird NICHT (die Pipe des Elternprozesses ist tot, der
+  // Endtext ist ohnehin verloren — nur die Arbeit auf der Platte nicht).
+  if (t.orphaned === "ja") {
+    const badge = document.createElement("span");
+    badge.className = "gate-gap-badge";   // reuse the red-warn style
+    badge.textContent = "⚠ Verwaister Lauf";
+    badge.title = "Der Prozess dieses Tickets läuft noch, aber der "
+      + "Dispatcher, der ihn gestartet hat, ist weg — sein Ergebnis "
+      + "kommt nirgends mehr an.";
+    el.querySelector(".id").after(badge);
+    const line = document.createElement("div");
+    line.className = "gate-gap-note";
+    line.textContent = "Verwaister Lauf: Prozess läuft weiter, aber "
+      + "sein Ergebnis kommt nirgends mehr an. Beenden entscheidest du.";
+    el.appendChild(line);
+    const btn = document.createElement("button");
+    btn.className = "card-move-up"; btn.type = "button";
+    btn.textContent = "⏹ Beenden";
+    btn.title = "Beendet den weiterlaufenden Agenten-Prozess und setzt "
+      + "das Ticket auf „Fehlgeschlagen“. Die Arbeit auf der Platte im "
+      + "Zielprojekt bleibt (siehe git-Verlauf); nur der noch nicht "
+      + "geschriebene Endtext ist ab dem Tod des Besitzers verloren.";
+    btn.addEventListener("click", async e => {
+      e.stopPropagation();
+      if (!confirm("Verwaisten Lauf für " + t.id + " wirklich beenden?"))
+        return;
+      try {
+        await api("/api/tickets/" + t.id + "/kill-orphan", {});
+      } catch (err) { showError(err.message); }
+      refresh();
+    });
+    el.appendChild(btn);
+    el.classList.add("gate-gap");
   }
   // WB-168: interactive-only opt-in. Same "waiting" ring as an epic when it
   // was bounced back for lack of a chat session — reuses the same class so
@@ -1594,6 +1771,7 @@ function openCreate() {
   applyCreateDefault();        // WB-228 — entscheidet mit frischem Stand
   syncGateRow(document.getElementById("createForm"));
   syncLocalLaneNote(document.getElementById("createForm"));  // WB-220
+  syncBackendRow(document.getElementById("createForm"));     // WB-238
   dlg.showModal();
 }
 
@@ -1743,15 +1921,15 @@ function gateNames(project) {
   return ((config.gates || {})[project || config.default_project] || []);
 }
 
-// WB-228 (the owner's stated goal, 2026-08-18: dsh as the default): the
-// CREATE default is dsh — but only where it can actually start. A project
-// without a named check refuses local assignees outright, and a default that
-// runs straight into a refusal is not a default, so those fall back to claude.
-// The WB-175 router outranks the default; a hand-picked value is never
-// overwritten (dirty flag until the dialog reopens). The detail dialog keeps
-// the stored assignee untouched.
+// WB-252 (the owner's revised position, 2026-08-20: „claude ist der goto
+// Agent"): the CREATE default is always claude. Reverses the gate-aware
+// dsh default from WB-228 — the WB-175 router still outranks this default
+// (a title match for claude/opencode wins), a hand-picked value is never
+// overwritten (dirty flag until the dialog reopens), and the detail dialog
+// keeps the stored assignee untouched. `project` stays in the signature
+// because callers pass it and a future per-project override would live here.
 function defaultAssignee(project) {
-  return gateNames(project).length ? "dsh" : "claude";
+  return "claude";
 }
 
 function applyCreateDefault() {
@@ -1822,10 +2000,24 @@ function syncLocalLaneNote(form) {
   note.hidden = !isLocalLane(form.assignee.value);
 }
 
+// WB-238: the backend row only makes sense for dsh — opencode-task knows
+// nothing about backends, claude/opencode reject the field at the store
+// level. Toggled by the same events as the gate row.
+function syncBackendRow(form) {
+  const row = form.querySelector(".backend-row");
+  if (!row) return;
+  const isDsh = (form.assignee.value || "").trim().toLowerCase() === "dsh";
+  row.hidden = !isDsh;
+  // When we hide it, clear the value so a stale selection cannot be
+  // POSTed on a subsequent save (the server would 400 correctly, but
+  // the honest UX is not to send the value the user cannot see).
+  if (!isDsh) form.backend.value = "";
+}
+
 for (const id of ["createForm", "detailForm"]) {
   const form = document.getElementById(id);
   if (!form) continue;
-  const sync = () => { syncGateRow(form); syncLocalLaneNote(form); };
+  const sync = () => { syncGateRow(form); syncLocalLaneNote(form); syncBackendRow(form); };
   form.assignee.addEventListener("input", sync);
   form.assignee.addEventListener("change", sync);
   if (form.project) form.project.addEventListener("change", sync);
@@ -1856,6 +2048,11 @@ document.getElementById("createForm").addEventListener("submit", async () => {
   if (formEl.dataset.routerSuggestion)                      // WB-175
     body.router_suggestion = formEl.dataset.routerSuggestion;
   if (!body.gate) delete body.gate;
+  // WB-238 / WB-251 shape: an empty backend is the default; don't send it
+  // (and don't send gate_gap either) so a running server that predates
+  // the field does not reject the whole create.
+  if (!body.backend) delete body.backend;
+  if (!body.gate_gap) delete body.gate_gap;
   try {
     await api("/api/tickets", body);
     refresh();
@@ -1912,6 +2109,9 @@ function openDetail(t) {
   form.nicht_mit.value = t.nicht_mit || "";
   form.fork.checked = t.fork === "ja";
   form.interactive.checked = t.interactive === "ja";
+  form.gate_gap.value = t.gate_gap || "";                     // WB-226
+  form.backend.value = t.backend || "";                       // WB-238
+  syncBackendRow(form);                                       // WB-238
   document.getElementById("detailResult").textContent = parts.result || "(noch offen)";
   renderReviews(t);
   const sess = document.getElementById("detailSession");
@@ -1920,7 +2120,9 @@ function openDetail(t) {
   if (run) lines.push((run.forked ? "Läuft als Abzweigung von Session: " : "Setzt Session fort: ")
                       + (run.parent || "(frisch)") + " · seit " + run.started);
   if (t.session) lines.push("Bearbeitet von Session: " + t.session);
-  if (run || t.session) lines.push("Lauf-Protokoll: /tmp/werkbank-agent-" + t.id + ".log");
+  if (run || t.session)
+    lines.push("Lauf-Protokoll: " + (config.log_dir || "(Pfad unbekannt)")
+               + "/werkbank-agent-" + t.id + ".log");
   sess.textContent = lines.join("\n");
   document.getElementById("detail").showModal();
 }
@@ -1929,17 +2131,34 @@ document.getElementById("detailForm").addEventListener("submit", async () => {
   const form = document.getElementById("detailForm");
   const parts = splitBody(detailTicket.body);
   const body = joinBody(form.description.value, parts.result, parts.reviews);
+  // WB-251: only ship fields the user actually changed. The store rejects
+  // unknown keys with a German "Unbekannte Felder …" (WB-178) — which fires
+  // every time a running server predates a field the fresh board.html knows
+  // about (WB-168 `interactive`, WB-226 `gate_gap`, and any future add).
+  // Sending an unchanged empty value on every Save turned that into a
+  // "cannot save the description" bug on the day the field landed. Sending
+  // only diffs is proper PATCH-semantics AND survives stale servers for
+  // fields the user isn't touching.
+  const patch = {
+    title: form.title.value, type: form.type.value, assignee: form.assignee.value,
+    priority: form.priority.value, project: form.project.value,
+    nach: form.nach.value, nicht_mit: form.nicht_mit.value,
+    fork: form.fork.checked ? "ja" : "nein", body,
+    gate: form.querySelector("select[name=gate]").disabled
+      ? "" : form.querySelector("select[name=gate]").value,
+    version: detailTicket.version,
+  };
+  const interactive = form.interactive.checked ? "ja" : "nein";
+  if (interactive !== (detailTicket.interactive || "nein"))
+    patch.interactive = interactive;
+  const gap = form.gate_gap.value;
+  if (gap !== (detailTicket.gate_gap || ""))
+    patch.gate_gap = gap;
+  const backend = form.backend.value;                         // WB-238
+  if (backend !== (detailTicket.backend || ""))
+    patch.backend = backend;
   try {
-    await api("/api/tickets/" + detailTicket.id, {
-      title: form.title.value, type: form.type.value, assignee: form.assignee.value,
-      priority: form.priority.value, project: form.project.value,
-      nach: form.nach.value, nicht_mit: form.nicht_mit.value,
-      fork: form.fork.checked ? "ja" : "nein",
-      interactive: form.interactive.checked ? "ja" : "nein", body,
-      gate: form.querySelector("select[name=gate]").disabled
-        ? "" : form.querySelector("select[name=gate]").value,
-      version: detailTicket.version,
-    });
+    await api("/api/tickets/" + detailTicket.id, patch);
     refresh();
   } catch (e) { showError(e.message); refresh(); }
 });

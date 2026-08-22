@@ -1,7 +1,7 @@
 ---
 name: explaining-complexity
 description: Use when the user requests a new feature or change, before building anything — give an honest, plain-language cost assessment first.
-version: 1
+version: 3
 ---
 
 # Explaining Complexity

@@ -25,6 +25,7 @@ journalling habit produces. They were checked and contain no private data.
 So the export has no `docs/journal/`, and the mirror step must leave the
 directory alone instead of deleting what it does not have:
 
+    python3 scripts/publish-clean-copy.py --verify     # ALWAYS, immediately before
     rsync -a --delete --exclude=.git \
           --exclude='docs/journal' --exclude='docs/journal/**' \
           --exclude='__pycache__' --exclude='*.pyc' \
@@ -39,11 +40,24 @@ suite INSIDE `dist/` (to read the export's own test count, say) recreates
 them, and a `.pyc` embeds the absolute source path it was compiled from:
 
     strings dist/werkbank-board/src/werkbank/__pycache__/auth.cpython-310.pyc
-    /home/<owner>/code/agent_ticket/dist/werkbank-board/src/werkbank/auth.py
+    /home/<owner>/<checkout>/dist/werkbank-board/src/werkbank/auth.py
 
 Found by an adversarial review on 2026-08-18, in a build that had passed all
 gates: the purge had run at 10:46 and the manual test run recreated the files
 at 10:54. Every gate here is text-based and blind to bytecode.
+
+`--verify` re-runs every gate against the export as it stands right now,
+without rebuilding. Run it as the LAST thing before the rsync: gates that only
+ran at build time say nothing about what happened to the copy afterwards, and
+twice that is exactly how bytecode carrying the owner's home path got back in.
+
+**Do not run the suite inside `dist/` at all — not even with `python3 -B`.**
+Measured 2026-08-22: `-B` stops the parent from writing bytecode, and the
+tests that spawn subprocesses write it anyway (3 files that run). The publish script already runs
+it there and prints the count; reading that line is the supported way to learn
+the export's test number. Running it by hand recreates the bytecode AFTER the
+gate that proves it is gone — which happened twice, on 2026-08-18 and again on
+2026-08-21, both times found by a reviewer rather than by the gates.
 
 The README describes them as a sample that stops at 1.0. Keep that true: do not
 start adding new entries there by hand.

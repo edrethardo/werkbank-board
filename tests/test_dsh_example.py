@@ -138,6 +138,33 @@ class DshLauncherContractTest(unittest.TestCase):
                  cwd=self.dir)
         self.assertTrue(r.stdout.strip().startswith(str(node_dir)), r.stdout)
 
+    def test_an_unimplemented_backend_is_refused_not_ignored(self):
+        """WB-263: the board SCHEDULES by the backend field — a `claude`
+        ticket goes in the Claude lane because it is supposed to leave the GPU
+        alone. A launcher that ignores the variable runs the local model there
+        anyway, so two local runs end up fighting over one card while the
+        board believes the GPU is free. Refusing is the only honest answer a
+        launcher that cannot do it can give."""
+        agent = _stub_agent(self.dir, 'echo "ICH LIEF" > "$DSH_SEEN"\n')
+        seen = self.dir / "seen.txt"
+        r = _run([str(self.project)], "x",
+                 {"DSH_BIN": str(agent), "DSH_SEEN": str(seen),
+                  "DSH_TASK_BACKEND": "claude"}, cwd=self.dir)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertFalse(seen.exists(),
+                         "the local model must NOT run when another backend "
+                         "was asked for")
+        self.assertIn("backend", r.stderr.lower())
+
+    def test_the_local_backend_is_the_default_and_still_runs(self):
+        agent = _stub_agent(self.dir, 'echo FERTIG\n')
+        for value in ("", "local"):
+            r = _run([str(self.project)], "x",
+                     {"DSH_BIN": str(agent), "DSH_TASK_BACKEND": value},
+                     cwd=self.dir)
+            self.assertEqual(r.returncode, 0, f"{value!r}: {r.stderr}")
+            self.assertEqual(r.stdout.strip(), "FERTIG")
+
     def test_missing_directory_is_exit_3(self):
         r = _run([str(self.dir / "gibt-es-nicht")], "x", {}, cwd=self.dir)
         self.assertEqual(r.returncode, board_side.BAD_DIRECTORY)

@@ -1,7 +1,7 @@
 ---
 name: creating-skills
 description: Use when a task type has occurred twice, when the user says "always do it this way", or when following a skill produced a bad result — extract or improve a skill.
-version: 1
+version: 3
 ---
 
 # Creating Skills
@@ -27,14 +27,19 @@ learns — without it, every session starts from zero.
 - Short, imperative steps. Reference material goes in extra files in the skill folder,
   loaded only when needed.
 
-## Which layer
+## Where a skill lives
 
-- **Tool-specific** (mentions this tool's files, data, or quirks) → this repo's
-  `.claude/skills/`.
-- **Generic** (would help ANY tool repo) → BOTH `~/.claude/skills/<name>/` AND this
-  repo's `.claude/skills/_user-level/<name>/` staging copy, kept identical — the staging
-  copy is how improvements reach future tools when the template is copied on. Editing
-  only one copy is a bug.
+Every skill of this tool lives in this repo's `.claude/skills/`. Nothing is installed
+machine-wide: skills here load in this project and nowhere else, so improving one can
+never change how Claude behaves in the user's other projects. Edit the skill in place
+and bump its `version:`.
+
+If the improvement is generic — it would help ANY project using this setup, not just
+this tool — also offer to carry it back to the kit: the project's own kit handshake file (if it has one) records
+`kit_origin`. If that is a local folder, apply the same change and version bump there
+and journal it in both places. If it is only a URL, or the user does not want to bother,
+journal the improvement here with a "not carried back" note and move on; the tool keeps
+working either way.
 
 ## Proven patterns
 

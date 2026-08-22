@@ -17,8 +17,22 @@ PLACEHOLDER = "/pfad/zu/deinem/projekt"
 
 
 def config_warning(cfg: dict, config_exists: bool, repo_root):
-    """German warning if the board is unconfigured, else None."""
+    """German warning if the board is unconfigured, else None.
+
+    WB-263: a config.json that sets only the port used to pass silently. The
+    defaults put `default_project` on the Werkbank checkout itself, so the
+    first dragged ticket set a Bash-capable agent loose on the board's own
+    repository — the exact accident WB-48 built this warning for, reached
+    through a half-filled config instead of a missing one. Found by a review
+    that walked a first run on a fresh machine."""
     project = (cfg or {}).get("default_project") or ""
+    named_in_file = (cfg or {}).get("default_project_in_file", True)
+    if config_exists and not named_in_file:
+        return ("In config.json fehlt das Feld default_project — als Ziel gilt "
+                "damit der Werkbank-Ordner selbst. Ein Ticket, das du nach „In "
+                "Arbeit\u201c ziehst, laesst dann einen Agenten mit "
+                "Befehls-Rechten auf die Werkbank los. Trag dein Projekt ein, "
+                "bevor du ein Ticket startest.")
     if not config_exists:
         return ("Keine config.json vorhanden — das Standard-Projekt zeigt damit auf "
                 "die Werkbank selbst. Kopiere config.example.json nach config.json "
@@ -35,12 +49,21 @@ def config_warning(cfg: dict, config_exists: bool, repo_root):
 def dispatch_refusal(cfg: dict, ticket_project: str):
     """German reason why this ticket must not start, or None.
 
-    Only fires while the board is unconfigured AND the ticket would run inside
-    the Werkbank checkout itself."""
+    Fires while the board is unconfigured AND the ticket would run inside the
+    Werkbank checkout itself.
+
+    WB-263 round 4: "unconfigured" now covers BOTH shapes. A config.json that
+    never names `default_project` falls back to the checkout exactly like a
+    missing one — and until this fix that half-filled case got the warning
+    without the refusal. A warning describes the accident; only the refusal
+    prevents it, and the user who does not read banners is precisely the one
+    this guard exists for. Found by the last review before release."""
     repo_root = (cfg or {}).get("repo_root")
     if not repo_root:
         return None
-    if cfg.get("config_exists", True):
+    configured = (cfg.get("config_exists", True)
+                  and cfg.get("default_project_in_file", True))
+    if configured:
         return None
     try:
         same = Path(ticket_project or "").resolve() == Path(repo_root).resolve()
@@ -48,10 +71,12 @@ def dispatch_refusal(cfg: dict, ticket_project: str):
         return None
     if not same:
         return None
-    return ("Nicht gestartet: Die Werkbank ist noch nicht eingerichtet (keine "
-            "config.json), und dieses Ticket würde einen Agenten mit "
-            "Befehls-Rechten auf den Werkbank-Ordner selbst loslassen. Lege erst "
-            "config.json an und trage dein Projekt ein.")
+    fehlt = ("keine config.json" if not cfg.get("config_exists", True)
+             else "in config.json fehlt das Feld default_project")
+    return (f"Nicht gestartet: Die Werkbank ist noch nicht eingerichtet "
+            f"({fehlt}), und dieses Ticket würde einen Agenten mit "
+            "Befehls-Rechten auf den Werkbank-Ordner selbst loslassen. Trag "
+            "erst dein Projekt ein.")
 
 
 def port_busy_message(port: int) -> str:

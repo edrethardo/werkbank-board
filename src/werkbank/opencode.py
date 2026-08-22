@@ -222,6 +222,16 @@ def run_task(t, task_text: str, run=None, timeout=None, on_pid=None,
     return proc.returncode, (getattr(proc, "stdout", "") or "").strip()
 
 
+def _short_path(path: str) -> str:
+    """A tilde-shortened home path instead of the absolute one. WB-263 put the resolved
+    binary on the card so nobody has to guess which copy ran — and the first
+    screenshot taken for the README showed the owner's full home path on a
+    ticket. It is on his own machine either way, but it goes on every
+    screenshot and every demo projector, so shorten what adds nothing."""
+    home = str(Path.home())
+    return "~" + path[len(home):] if path.startswith(home + "/") else path
+
+
 def runner_for(assignee) -> str:
     """WB-219: which wrapper runs this ticket. Unknown names fall back to
     opencode-task — the caller has already passed `known_assignee`, and a
@@ -252,6 +262,18 @@ def _run_kwargs(run, timeout, on_pid, t, owner=None):
         env["WERKBANK_TICKET_ID"] = getattr(t, "id", "") or ""
         if owner:
             env["WERKBANK_TICKETS_DIR"] = str(Path(owner).resolve())
+        # WB-238: per-ticket dsh backend override. Only meaningful for the
+        # dsh runner (opencode-task ignores the var; the store already
+        # rejects a `backend:` set on non-dsh tickets, so we should never
+        # reach here with backend=claude on an opencode ticket — the check
+        # here is belt & braces). The wrapper reads DSH_TASK_BACKEND at
+        # startup; empty / "local" means the wrapper's own default (the
+        # local model), "claude" routes through the local claude CLI
+        # and thus the subscription quota.
+        backend = (getattr(t, "backend", "") or "").strip().lower()
+        assignee = (getattr(t, "assignee", "") or "").strip().lower()
+        if backend in ("local", "claude") and assignee == "dsh":
+            env["DSH_TASK_BACKEND"] = backend
         kwargs["env"] = env
     if on_pid is not None and ("on_pid" in params or _accepts_var_keywords(params)):
         kwargs["on_pid"] = on_pid
@@ -567,7 +589,12 @@ def _work_ticket_inner(t, cfg: dict, run, on_progress, name, gate,
 
     for attempt in (1, 2):
         attempts = attempt
-        say(f"{worker}, Versuch {attempt}")
+        # WB-263: name the BINARY, not just the worker. `_resolve_bin` falls
+        # back to the usual install locations when nothing is on PATH, so a
+        # stale copy in ~/.local/bin can shadow the one the user thinks they
+        # installed — and nothing in the ticket said which file had run.
+        say(f"{worker} ({_short_path(runner_for(worker))}), "
+            f"Versuch {attempt}")
         try:
             rc, text = run_task(t, task, run=run, timeout=left(), on_pid=on_pid,
                                 owner=owner)

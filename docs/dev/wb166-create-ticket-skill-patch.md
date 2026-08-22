@@ -5,7 +5,11 @@ tags: [decision, docs]
 summary: The create-ticket skill mentions opencode's gate requirement in the recommendation logic but the actual creation snippet forwards neither `assignee=` nor `gate=`, so an opencode recommendation silently becomes a claude ticket. WB-166 asks for the check to be resolved AT creation. This doc carries the exact replacement content for `.claude/skills/create-ticket/SKILL.md` — the write itself is blocked in dispatched runs (the skill infrastructure is intentionally not agent-writable), so the user or an interactive session has to apply it.
 ---
 
-# WB-166 — proposed patch for the create-ticket skill
+# WB-166 — proposed patch
+
+> **APPLIED (2026-08-21).** The shipped `create-ticket` skill is v6 and carries
+> the `epic` type and the gate requirement. Kept as the record of why; nothing
+> here needs doing any more.
 
 ## Why the patch, not the patch itself, ships here
 

@@ -23,6 +23,7 @@ board depends on is only the shape of the conversation:
 | exit 4 | model endpoint unreachable — the board returns the ticket to *Offen* and records no failure |
 | exit 5 | ran, but produced no final text |
 | exit 127 | the agent binary itself is not installed (the message names the variable to set) |
+| exit 6 | (`dsh-task`) a backend was requested that the launcher does not implement |
 
 `opencode-task` in this folder is a **working reference implementation** you can
 run as-is or rewrite. Standard library only.
@@ -77,11 +78,11 @@ tests against yours.
 > **You have to obtain that harness yourself.** This project does not ship it,
 > does not install it and does not endorse a particular source — the launcher
 > only wraps whatever `dsh` binary is on your `PATH` (or the one you name in
-> `DSH_BIN`). If you do not have it, use `opencode` instead; the board treats
-> the two identically. The board treats it **exactly like `opencode`**: one
-code path, one exit-code mapping, one set of expectations. So `dsh-task` in
-this folder answers the very same contract as the table above — only the
-innards differ.
+> `DSH_BIN`). If you do not have it, use `opencode` instead.
+
+The board treats `dsh` **exactly like `opencode`**: one code path, one
+exit-code mapping, one set of expectations. So `dsh-task` in this folder
+answers the very same contract as the table above — only the innards differ.
 
     cp examples/dsh-task ~/.local/bin/
     chmod +x ~/.local/bin/dsh-task
@@ -96,6 +97,7 @@ innards differ.
 | `DSH_PROFILE` | profile to use (default `headless`) |
 | `DSH_NODE_BIN` | a Node executable to put first on PATH (see below) |
 | `DSH_ENDPOINT` | OpenAI-compatible base URL; if set, the launcher asks it which model it actually serves |
+| `DSH_TASK_BACKEND` | set BY THE BOARD from the ticket's `backend` field. Empty or `local` = the local model. Anything else must be implemented by your launcher — **the board schedules by this value**, putting a `claude` run in the Claude lane because it is supposed to leave the GPU free. A launcher that ignores it runs the local model there anyway and two local runs fight over one card, so the reference launcher refuses with exit 6 instead. |
 | `DSH_TIMEOUT` | seconds for the whole run (default 3600) |
 | `DSH_PROBE_TIMEOUT` | seconds to wait for the endpoint (default 60) |
 

@@ -54,7 +54,8 @@ Root causes, in order of prevalence in the grep audit:
    `opencode.py:123` acknowledge the gap; tests don't.
 4. **Hardcoded POSIX paths.** `/tmp/…`, `/proc/…`, `/bin/…`,
    `/usr/…` sprinkled through both `src/` and `tests/`. `board.html:919,
-   1361` shows `/tmp/werkbank-agent-<id>.log` to the USER — on Windows
+  (Historisch: der Dialog nannte damals einen /tmp-Pfad. Seit 2026-08-22
+  liefert der Server das echte Protokoll-Verzeichnis mit — WB-263.)
    the runtime actually writes to `%LOCALAPPDATA%\werkbank\logs\` per
    `dispatch.py:498`.
 5. **Test cleanup hangs.** `_reap` (`test_dispatch.py:2577`) waits on a

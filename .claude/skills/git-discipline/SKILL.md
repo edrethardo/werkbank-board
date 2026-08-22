@@ -12,7 +12,7 @@ History is the backup — treat it that way.
 ## Rules
 
 - `main` is the working branch; commit directly for routine work.
-- Commit at every working state — "working" means the checks pass (`testing` skill),
+- Commit at every working state — "working" means the project's own checks pass,
   not merely that the file was saved. Small commits beat big ones.
 - Message format: first line = what changed for the tool; body = why, when the why isn't
   obvious. English. Written so a future session — or a hired developer — can follow the
